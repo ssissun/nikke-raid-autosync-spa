@@ -337,15 +337,19 @@ async function prepareDryRunFlow(): Promise<void> {
       lastDiagnostic?.guessedFormat === "pre-migration"
         ? "pre-migration"
         : "post-migration";
+    const raidNumStr =
+      payload.raidNum !== undefined && payload.raidNum !== null
+        ? payload.raidNum
+        : "unknown";
     const syncroColumn = await findRaidColumn(
       sheetId,
-      payload.raidNum,
+      raidNumStr,
       token,
       fetch,
       layout
     );
     if (syncroColumn === null) {
-      lastError = `dry-run: ${payload.raidNum}차 컬럼 없음 (OO차 placeholder 없음)`;
+      lastError = `dry-run: ${raidNumStr}차 컬럼 없음 (OO차 placeholder 없음)`;
       renderApp();
       return;
     }
@@ -577,7 +581,7 @@ function renderApp(): void {
         `
       : payload.type === "nikke-raid-data"
         ? `
-            <p class="status status--ok">📨 payload 수신: <strong>${escapeHtml(payload.raidNum)}차</strong> · members ${payload.members.length}명 · raid ${payload.raid.length}행</p>
+            <p class="status status--ok">📨 payload 수신: <strong>${escapeHtml(payload.raidNum ?? "(회차 메타 미캡처)")}${payload.raidNum ? "차" : ""}</strong> · members ${payload.members.length}명 · raid ${payload.raid.length}행</p>
             <button type="button" id="run-matching-btn" ${canMatch ? "" : "disabled"}>매칭 실행</button>
           `
         : `<p class="status">📨 payload type=${escapeHtml(payload.type)} — 매칭 불가</p>`

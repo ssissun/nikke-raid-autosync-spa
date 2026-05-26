@@ -36,7 +36,7 @@ export type ProcessedRaidRow = [
 export type NikkeRaidPayload =
   | {
       type: "nikke-raid-data";
-      raidNum: string;
+      raidNum?: string | null; // GetUnionRaidLevelInfo 미캡처 시 null/undefined
       capturedAt: string;
       raid: ProcessedRaidRow[];
       members: GuildMember[];

@@ -23,8 +23,10 @@ export interface BatchUpdatePlan {
 
 const RAID_STATS_SHEET = "레이드 통계";
 
-function computeBackupTabName(raidNum: string | undefined): string {
-  if (raidNum === undefined || raidNum.length === 0) return "_backup_unknown";
+function computeBackupTabName(raidNum: string | null | undefined): string {
+  if (raidNum === undefined || raidNum === null || raidNum.length === 0) {
+    return "_backup_unknown";
+  }
   return `_backup_${raidNum}`;
 }
 
