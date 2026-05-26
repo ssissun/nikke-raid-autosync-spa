@@ -2,8 +2,21 @@
 
 import { getAccessToken, getTokenExpiry, isAuthenticated, login, logout } from "./auth";
 import { GOOGLE_CLIENT_ID } from "./config";
+import {
+  clearSyncClassification,
+  getSyncClassification,
+  startClassificationFlow,
+  type ClassificationResult,
+  SyncError,
+} from "./matching";
 import { openPicker } from "./picker";
+import {
+  clearPayload,
+  getLastPayload,
+  initMessageListener,
+} from "./postmessage";
 import { clearStorage, getSheetId, getSheetName } from "./storage";
+import type { NikkeRaidPayload } from "./types";
 
 const APP_VERSION = "0.1.0";
 
@@ -16,8 +29,14 @@ declare global {
     getSheetId?: () => string | null;
     getSheetName?: () => string | null;
     clearStorage?: () => void;
+    getLastPayload?: () => NikkeRaidPayload | null;
+    clearPayload?: () => void;
+    getSyncClassification?: () => ClassificationResult | null;
+    runMatching?: () => Promise<void>;
   }
 }
+
+let lastError: string | null = null;
 
 let countdownTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -41,6 +60,36 @@ function clearCountdown(): void {
   if (countdownTimer !== null) {
     clearInterval(countdownTimer);
     countdownTimer = null;
+  }
+}
+
+async function runMatching(): Promise<void> {
+  const token = getAccessToken();
+  const sheetId = getSheetId();
+  const payload = getLastPayload();
+  if (token === null || sheetId === null || payload === null) {
+    lastError = "매칭 실행 조건 미충족 (로그인 / 시트 / payload 중 누락)";
+    renderApp();
+    return;
+  }
+  if (payload.type !== "nikke-raid-data") {
+    lastError = `payload type=${payload.type} — 매칭 불가`;
+    renderApp();
+    return;
+  }
+  try {
+    lastError = null;
+    clearSyncClassification();
+    await startClassificationFlow(token, sheetId, payload.members);
+    renderApp();
+  } catch (e) {
+    if (e instanceof SyncError) {
+      lastError = `${e.code}: ${e.message}`;
+    } else {
+      lastError = e instanceof Error ? e.message : String(e);
+    }
+    console.error("[NRA-SPA] matching error", e);
+    renderApp();
   }
 }
 
@@ -100,6 +149,65 @@ function renderApp(): void {
         `
     : "";
 
+  const payload = authed ? getLastPayload() : null;
+  const classification = authed ? getSyncClassification() : null;
+  const canMatch =
+    authed &&
+    sheetId !== null &&
+    payload !== null &&
+    payload.type === "nikke-raid-data";
+
+  const payloadBlock = authed
+    ? payload === null
+      ? `
+          <p class="status">📨 payload 미수신 — blablalink.com 새 탭에서 유저스크립트가 송신하거나, DevTools에서 mock dispatch</p>
+          <details>
+            <summary>mock payload 발행 (DevTools)</summary>
+            <pre><code>window.dispatchEvent(new MessageEvent("message", {
+  origin: "https://tools.blablalink.com",
+  data: {
+    type: "nikke-raid-data",
+    raidNum: "40",
+    capturedAt: new Date().toISOString(),
+    raid: [],
+    members: [
+      { member_id: "m1", nickname: "테스트A", synchro_level: 420, commander_level: 160, icon_id: "1" },
+      { member_id: "m2", nickname: "테스트B", synchro_level: 415, commander_level: 158, icon_id: "2" }
+    ],
+    meta: { guildId: "g1", areaId: "a1" }
+  }
+}));</code></pre>
+          </details>
+        `
+      : payload.type === "nikke-raid-data"
+        ? `
+            <p class="status status--ok">📨 payload 수신: <strong>${escapeHtml(payload.raidNum)}차</strong> · members ${payload.members.length}명 · raid ${payload.raid.length}행</p>
+            <button type="button" id="run-matching-btn" ${canMatch ? "" : "disabled"}>매칭 실행</button>
+          `
+        : `<p class="status">📨 payload type=${escapeHtml(payload.type)} — 매칭 불가</p>`
+    : "";
+
+  const classificationBlock =
+    classification !== null
+      ? `
+          <p class="status">🔀 분류 결과 (mode: <code>${escapeHtml(classification.mode)}</code>) — staying ${classification.classification.staying.length}명 · leaving ${classification.classification.leaving.length}명 · joining ${classification.classification.joining.length}명${
+            classification.nicknameChanges.length > 0
+              ? ` · 닉네임 변경 ${classification.nicknameChanges.length}건`
+              : ""
+          }</p>
+          ${
+            classification.alerts.length > 0
+              ? `<ul class="alerts">${classification.alerts.map((a) => `<li>${escapeHtml(a)}</li>`).join("")}</ul>`
+              : ""
+          }
+        `
+      : "";
+
+  const errorBlock =
+    lastError !== null
+      ? `<section class="error" role="alert"><p>⚠️ ${escapeHtml(lastError)}</p></section>`
+      : "";
+
   app.innerHTML = `
     <header>
       <h1>NIKKE 레이드 자동 동기화 도구</h1>
@@ -108,9 +216,12 @@ function renderApp(): void {
     <main>
       <section class="auth">${authBlock}</section>
       ${sheetBlock !== "" ? `<section class="sheet">${sheetBlock}</section>` : ""}
+      ${payloadBlock !== "" ? `<section class="payload">${payloadBlock}</section>` : ""}
+      ${classificationBlock !== "" ? `<section class="classification">${classificationBlock}</section>` : ""}
+      ${errorBlock}
       <section class="hint">
         <p>이 도구는 <code>blablalink.com</code> 새 탭에서 postMessage를 수신해 사본 시트를 자동으로 갱신합니다.</p>
-        <p><em>매칭·dry-run·쓰기는 F-NRA-002-05 이후 추가됩니다.</em></p>
+        <p><em>dry-run · 쓰기는 F-NRA-002-06/07 wiring 이후 추가됩니다.</em></p>
       </section>
     </main>
   `;
@@ -135,6 +246,9 @@ function renderApp(): void {
   document
     .getElementById("change-sheet-btn")
     ?.addEventListener("click", () => void handleSelectSheet());
+  document
+    .getElementById("run-matching-btn")
+    ?.addEventListener("click", () => void runMatching());
 
   clearCountdown();
   if (authed && expiresAt !== null) {
@@ -153,14 +267,38 @@ function renderApp(): void {
 
 function bootstrap(): void {
   window.addEventListener("authStateChange", renderApp);
+  window.addEventListener("payloadReceived", () => renderApp());
+  window.addEventListener("payloadValidationFailed", () => {
+    lastError = "payload 검증 실패 — type/필수 필드 확인";
+    renderApp();
+  });
+  window.addEventListener("payloadNeedLogin", () => {
+    lastError = "유저스크립트 — blablalink 로그인 필요";
+    renderApp();
+  });
+  window.addEventListener("payloadNoData", () => {
+    lastError = "유저스크립트 — 회차 데이터 없음";
+    renderApp();
+  });
+  window.addEventListener("payloadError", (e) => {
+    const detail = (e as CustomEvent).detail as { error?: { msg?: string } };
+    lastError = `유저스크립트 에러: ${detail.error?.msg ?? "unknown"}`;
+    renderApp();
+  });
 
-  // DevTools helpers (F-02 AC-T02-3, F-03 verification)
+  initMessageListener();
+
+  // DevTools helpers (F-02 AC-T02-3, F-03/F-04/F-05 verification)
   window.isAuthenticated = isAuthenticated;
   window.getAccessToken = getAccessToken;
   window.getTokenExpiry = getTokenExpiry;
   window.getSheetId = getSheetId;
   window.getSheetName = getSheetName;
   window.clearStorage = clearStorage;
+  window.getLastPayload = getLastPayload;
+  window.clearPayload = clearPayload;
+  window.getSyncClassification = getSyncClassification;
+  window.runMatching = runMatching;
 
   renderApp();
   console.info(`[NRA-SPA] v${APP_VERSION} initialized`);
