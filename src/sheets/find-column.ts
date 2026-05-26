@@ -1,8 +1,9 @@
-// F-NRA-002-07 회차 컬럼 자동 탐색 — `유니온 멤버!D1:Z1`.
-// Col B(member_id, hidden) 삽입 이후 회차 컬럼은 D부터 시작 (A=가입순서, B=member_id, C=닉네임, D+=회차).
+// F-NRA-002-07 회차 컬럼 자동 탐색.
+// 마이그레이션 후: 회차 컬럼은 Col D부터 (A=가입순서, B=member_id, C=닉네임, D+=회차)
+// 마이그레이션 전: 회차 컬럼은 Col C부터 (A=가입순서, B=닉네임, C+=회차)
 
-const RANGE = "유니온 멤버!D1:Z1";
-const D_COLUMN_OFFSET = 4; // A=1, B=2, C=3, D=4
+const POST_MIG_OFFSET = 4; // D=4
+const PRE_MIG_OFFSET = 3; // C=3
 
 export function columnNumberToLetter(n: number): string {
   if (n <= 0) return "";
@@ -21,13 +22,19 @@ interface ValuesGetResponse {
   values?: string[][];
 }
 
+export type RaidColumnLayout = "pre-migration" | "post-migration";
+
 export async function findRaidColumn(
   spreadsheetId: string,
   raidNum: string,
   accessToken: string,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  layout: RaidColumnLayout = "post-migration"
 ): Promise<string | null> {
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(RANGE)}`;
+  const startCol = layout === "pre-migration" ? "C" : "D";
+  const offset = layout === "pre-migration" ? PRE_MIG_OFFSET : POST_MIG_OFFSET;
+  const range = `유니온 멤버!${startCol}1:Z1`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`;
   const res = await fetchImpl(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
@@ -44,5 +51,5 @@ export async function findRaidColumn(
   }
   if (idx === -1) return null;
 
-  return columnNumberToLetter(D_COLUMN_OFFSET + idx);
+  return columnNumberToLetter(offset + idx);
 }

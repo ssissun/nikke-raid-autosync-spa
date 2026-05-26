@@ -16,6 +16,11 @@ import {
   initMessageListener,
 } from "./postmessage";
 import { clearStorage, getSheetId, getSheetName } from "./storage";
+import {
+  prepareDryRun,
+  type BatchUpdatePlan,
+} from "./dryrun";
+import { findRaidColumn, writeRaidData } from "./sheets";
 import type { NikkeRaidPayload } from "./types";
 
 const APP_VERSION = "0.1.0";
@@ -38,6 +43,9 @@ declare global {
     inspectMemberHeader?: () => Promise<string[]>;
     diagnoseSheet?: () => Promise<SheetDiagnostic | null>;
     autofillMemberNicknames?: () => Promise<void>;
+    prepareDryRunFlow?: () => Promise<void>;
+    confirmWriteFlow?: () => Promise<void>;
+    getBatchPlan?: () => BatchUpdatePlan | null;
   }
 }
 
@@ -56,6 +64,12 @@ interface SheetDiagnostic {
 }
 
 let lastDiagnostic: SheetDiagnostic | null = null;
+
+let lastBatchPlan: BatchUpdatePlan | null = null;
+type WriteStatus = "idle" | "running" | "done" | "error";
+let writeStatus: WriteStatus = "idle";
+const writeStages: Record<string, string> = {};
+let writeResult: { backupTabName: string } | null = null;
 
 let countdownTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -266,6 +280,105 @@ async function listSheetTabs(): Promise<string[]> {
   return titles;
 }
 
+async function getLastRaidRow(
+  spreadsheetId: string,
+  accessToken: string
+): Promise<number> {
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent("레이드 통계!A:A")}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) {
+    throw new Error(`getLastRaidRow failed: HTTP ${res.status}`);
+  }
+  const data = (await res.json()) as { values?: string[][] };
+  return data.values?.length ?? 0;
+}
+
+async function prepareDryRunFlow(): Promise<void> {
+  const token = getAccessToken();
+  const sheetId = getSheetId();
+  const payload = getLastPayload();
+  const classResult = getSyncClassification();
+  if (
+    token === null ||
+    sheetId === null ||
+    payload === null ||
+    classResult === null
+  ) {
+    lastError = "dry-run: 로그인/시트/payload/매칭 결과 필요";
+    renderApp();
+    return;
+  }
+  if (payload.type !== "nikke-raid-data") {
+    lastError = `dry-run: payload type=${payload.type}`;
+    renderApp();
+    return;
+  }
+
+  try {
+    lastError = null;
+    const layout =
+      lastDiagnostic?.guessedFormat === "pre-migration"
+        ? "pre-migration"
+        : "post-migration";
+    const syncroColumn = await findRaidColumn(
+      sheetId,
+      payload.raidNum,
+      token,
+      fetch,
+      layout
+    );
+    if (syncroColumn === null) {
+      lastError = `dry-run: ${payload.raidNum}차 컬럼 없음 (OO차 placeholder 없음)`;
+      renderApp();
+      return;
+    }
+    const lastRaidRow = await getLastRaidRow(sheetId, token);
+    const plan = prepareDryRun({
+      payload,
+      classification: classResult.classification,
+      alerts: classResult.alerts,
+      lastRaidRow,
+      syncroColumn,
+    });
+    lastBatchPlan = plan;
+    renderApp();
+  } catch (e) {
+    lastError = e instanceof Error ? e.message : String(e);
+    console.error("[NRA-SPA] prepareDryRun error", e);
+    renderApp();
+  }
+}
+
+async function confirmWriteFlow(): Promise<void> {
+  const token = getAccessToken();
+  const sheetId = getSheetId();
+  if (token === null || sheetId === null || lastBatchPlan === null) {
+    lastError = "쓰기: 사전 조건 미충족";
+    renderApp();
+    return;
+  }
+  writeStatus = "running";
+  for (const k of Object.keys(writeStages)) delete writeStages[k];
+  writeResult = null;
+  renderApp();
+
+  try {
+    const result = await writeRaidData(sheetId, lastBatchPlan, token, {
+      skipFingerprint: true, // ALLOWED_FINGERPRINTS 미실측 — dev 모드 임시 우회
+    });
+    writeStatus = "done";
+    writeResult = result;
+    lastError = null;
+  } catch (e) {
+    writeStatus = "error";
+    lastError = e instanceof Error ? e.message : String(e);
+    console.error("[NRA-SPA] writeRaidData error", e);
+  }
+  renderApp();
+}
+
 async function runMatching(): Promise<void> {
   const token = getAccessToken();
   const sheetId = getSheetId();
@@ -459,6 +572,53 @@ function renderApp(): void {
               ? `<ul class="alerts">${classification.alerts.map((a) => `<li>${escapeHtml(a)}</li>`).join("")}</ul>`
               : ""
           }
+          ${
+            classification.isComplete && lastBatchPlan === null
+              ? `<button type="button" id="prepare-dryrun-btn">🧪 dry-run 계산</button>`
+              : ""
+          }
+        `
+      : "";
+
+  const dryRunBlock =
+    lastBatchPlan !== null
+      ? `
+          <h3>🧪 dry-run 미리보기</h3>
+          <p class="status">
+            회차 <strong>${escapeHtml(lastBatchPlan.raidNum)}차</strong> ·
+            백업 탭 <code>${escapeHtml(lastBatchPlan.backupTabName)}</code> ·
+            회차 컬럼 <code>${escapeHtml(lastBatchPlan.syncroColumn)}</code>
+          </p>
+          <p class="meta">
+            레이드 통계 신규 행 ${lastBatchPlan.raidStatsRows.length} ·
+            멤버 syncro PUT ${lastBatchPlan.memberSyncroUpdates.length}건 ·
+            range <code>${escapeHtml(lastBatchPlan.raidStatsRange === "" ? "(레이드 통계 skip)" : lastBatchPlan.raidStatsRange)}</code>
+          </p>
+          ${
+            lastBatchPlan.unmatchedNames.length > 0
+              ? `<p class="status status--warn">⚠️ unmatched ${lastBatchPlan.unmatchedNames.length}건</p>`
+              : ""
+          }
+          ${
+            writeStatus === "idle"
+              ? `<button type="button" id="confirm-write-btn" ${lastBatchPlan.isConfirmable ? "" : "disabled"}>확인 후 시트에 기록 (실제 쓰기 · _backup_탭 자동 생성)</button>`
+              : ""
+          }
+          ${
+            writeStatus === "running"
+              ? `<p class="status">🔄 쓰기 진행: <code>${escapeHtml(JSON.stringify(writeStages))}</code></p>`
+              : ""
+          }
+          ${
+            writeStatus === "done" && writeResult !== null
+              ? `<p class="status status--ok">✅ 쓰기 완료 · backup 탭 <code>${escapeHtml(writeResult.backupTabName)}</code></p>`
+              : ""
+          }
+          ${
+            writeStatus === "error"
+              ? `<p class="status status--error">⚠️ 쓰기 실패: ${escapeHtml(lastError ?? "")}</p>`
+              : ""
+          }
         `
       : "";
 
@@ -478,6 +638,7 @@ function renderApp(): void {
       ${diagBlock !== "" ? `<section class="diagnostic">${diagBlock}</section>` : ""}
       ${payloadBlock !== "" ? `<section class="payload">${payloadBlock}</section>` : ""}
       ${classificationBlock !== "" ? `<section class="classification">${classificationBlock}</section>` : ""}
+      ${dryRunBlock !== "" ? `<section class="dryrun">${dryRunBlock}</section>` : ""}
       ${errorBlock}
       <section class="hint">
         <p>이 도구는 <code>blablalink.com</code> 새 탭에서 postMessage를 수신해 사본 시트를 자동으로 갱신합니다.</p>
@@ -515,6 +676,12 @@ function renderApp(): void {
   document
     .getElementById("autofill-btn")
     ?.addEventListener("click", () => void autofillMemberNicknames());
+  document
+    .getElementById("prepare-dryrun-btn")
+    ?.addEventListener("click", () => void prepareDryRunFlow());
+  document
+    .getElementById("confirm-write-btn")
+    ?.addEventListener("click", () => void confirmWriteFlow());
 
   clearCountdown();
   if (authed && expiresAt !== null) {
@@ -578,6 +745,25 @@ function bootstrap(): void {
   window.inspectMemberHeader = inspectMemberHeader;
   window.diagnoseSheet = diagnoseSheet;
   window.autofillMemberNicknames = autofillMemberNicknames;
+  window.prepareDryRunFlow = prepareDryRunFlow;
+  window.confirmWriteFlow = confirmWriteFlow;
+  window.getBatchPlan = () => lastBatchPlan;
+
+  window.addEventListener("sheetsWriteProgress", (e) => {
+    const detail = (e as CustomEvent).detail as { stage: string; status: string };
+    writeStages[detail.stage] = detail.status;
+    renderApp();
+  });
+  window.addEventListener("sheetsWriteComplete", (e) => {
+    const detail = (e as CustomEvent).detail as {
+      raidNum: string;
+      backupTabName: string;
+    };
+    writeStatus = "done";
+    writeResult = { backupTabName: detail.backupTabName };
+    console.info("[NRA-SPA] sheetsWriteComplete", detail);
+    renderApp();
+  });
 
   // 페이지 로드 시 자동 진단 (로그인 + 시트 둘 다 있을 때)
   if (isAuthenticated() && getSheetId() !== null) {
