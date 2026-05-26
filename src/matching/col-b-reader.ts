@@ -1,7 +1,8 @@
 // 유니온 멤버 Col A/B/C 읽기 — Sheets API values.get.
 // SOT: ai_docs/nikke-raid-autosync/API_SPEC.md §3 / SHEET_SCHEMA.md §2
+// 헤더 자동 감지: 마이그레이션 전(Col B=닉네임) vs 후(Col B=member_id, Col C=닉네임)
 
-const UNION_MEMBER_RANGE = "유니온 멤버!A2:C33";
+const UNION_MEMBER_HEADER_DATA_RANGE = "유니온 멤버!A1:C33";
 
 interface ValuesGetResponse {
   range: string;
@@ -9,10 +10,24 @@ interface ValuesGetResponse {
   values?: string[][];
 }
 
+export type SheetLayout = "pre-migration" | "post-migration";
+
 export interface ReadColBMapResult {
   colBMap: Map<string, number>; // member_id → sheetRow (2-based, header=row1)
   colCNicknames: Map<number, string>; // sheetRow → nickname
   allColBEmpty: boolean;
+  layout: SheetLayout;
+  header: string[];
+}
+
+function detectLayout(header: readonly string[]): SheetLayout {
+  const colB = (header[1] ?? "").trim();
+  if (colB === "member_id") return "post-migration";
+  // Col B에 "닉네임" 또는 nickname 키워드 / Col B 비어있고 Col C가 OO차/N차 패턴이면 pre-migration
+  if (colB.includes("닉네임") || /nickname/i.test(colB)) return "pre-migration";
+  const colC = (header[2] ?? "").trim();
+  if (/^(OO차|\d+차)$/.test(colC)) return "pre-migration";
+  return "post-migration"; // 기본
 }
 
 export async function readColBMap(
@@ -21,7 +36,7 @@ export async function readColBMap(
 ): Promise<ReadColBMapResult> {
   const url =
     `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}` +
-    `/values/${encodeURIComponent(UNION_MEMBER_RANGE)}`;
+    `/values/${encodeURIComponent(UNION_MEMBER_HEADER_DATA_RANGE)}`;
 
   const res = await fetch(url, {
     headers: {
@@ -31,29 +46,41 @@ export async function readColBMap(
 
   if (!res.ok) {
     throw new Error(
-      `Sheets API values.get 실패 (status ${res.status}) — range ${UNION_MEMBER_RANGE}`
+      `Sheets API values.get 실패 (status ${res.status}) — range ${UNION_MEMBER_HEADER_DATA_RANGE}`
     );
   }
 
   const data = (await res.json()) as ValuesGetResponse;
-  const rows = data.values ?? [];
+  const allRows = data.values ?? [];
+  const header = allRows[0] ?? [];
+  const dataRows = allRows.slice(1);
+  const layout = detectLayout(header);
 
   const colBMap = new Map<string, number>();
   const colCNicknames = new Map<number, string>();
   let anyColB = false;
 
-  // rows[i]는 시트 i+2 행 (A2부터 시작). Col B = idx 1, Col C = idx 2.
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
+  for (let i = 0; i < dataRows.length; i++) {
+    const row = dataRows[i];
     const sheetRow = i + 2;
-    const colB = (row[1] ?? "").trim();
-    const colC = (row[2] ?? "").trim();
-    if (colB.length > 0) {
-      colBMap.set(colB, sheetRow);
-      anyColB = true;
-    }
-    if (colC.length > 0) {
-      colCNicknames.set(sheetRow, colC);
+    if (layout === "pre-migration") {
+      // Col A=가입순서, Col B=닉네임 (마이그레이션 전 위치), Col C=OO차
+      const nickname = (row[1] ?? "").trim();
+      if (nickname.length > 0) {
+        colCNicknames.set(sheetRow, nickname);
+      }
+      // colBMap은 빈 상태 유지 (member_id 부재) → allColBEmpty=true → backfill 모드 진입
+    } else {
+      // Col A=가입순서, Col B=member_id, Col C=닉네임 (마이그레이션 후)
+      const memberId = (row[1] ?? "").trim();
+      const nickname = (row[2] ?? "").trim();
+      if (memberId.length > 0) {
+        colBMap.set(memberId, sheetRow);
+        anyColB = true;
+      }
+      if (nickname.length > 0) {
+        colCNicknames.set(sheetRow, nickname);
+      }
     }
   }
 
@@ -61,5 +88,7 @@ export async function readColBMap(
     colBMap,
     colCNicknames,
     allColBEmpty: !anyColB,
+    layout,
+    header,
   };
 }
