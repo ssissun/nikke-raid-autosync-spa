@@ -36,10 +36,25 @@ declare global {
     injectMockPayload?: (payload: NikkeRaidPayload) => void;
     listSheetTabs?: () => Promise<string[]>;
     inspectMemberHeader?: () => Promise<string[]>;
+    diagnoseSheet?: () => Promise<SheetDiagnostic | null>;
   }
 }
 
 let lastError: string | null = null;
+
+interface SheetDiagnostic {
+  header: string[];
+  rowCount: number;
+  filledRows: number;
+  sampleRows: string[][];
+  guessedFormat: "pre-migration" | "post-migration" | "empty" | "unknown";
+  colBNonEmpty: number;
+  colCNonEmpty: number;
+  fetchedAt: number;
+  error?: string;
+}
+
+let lastDiagnostic: SheetDiagnostic | null = null;
 
 let countdownTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -73,8 +88,91 @@ function injectMockPayload(payload: NikkeRaidPayload): void {
   window.dispatchEvent(new CustomEvent("payloadReceived", { detail: payload }));
 }
 
-// Sheets API 진단 — 유니온 멤버 헤더 행(A1:Z1) 확인.
-// 마이그레이션 전(Col A·B·C = 가입순서·닉네임·1차) vs 후(가입순서·member_id·닉네임·1차) 분기 판단용.
+// 시트 자동 진단 — 유니온 멤버 A1:Z33 fetch 후 헤더·데이터·구조 추정.
+// 시트 선택 직후 + 로그인 직후 자동 호출. 사용자가 console 안 만져도 UI에 결과 표시.
+async function diagnoseSheet(): Promise<SheetDiagnostic | null> {
+  const token = getAccessToken();
+  const sheetId = getSheetId();
+  if (token === null || sheetId === null) return null;
+
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent("유니온 멤버!A1:Z33")}`;
+  try {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) {
+      const errText = await res.text();
+      const diag: SheetDiagnostic = {
+        header: [],
+        rowCount: 0,
+        filledRows: 0,
+        sampleRows: [],
+        guessedFormat: "unknown",
+        colBNonEmpty: 0,
+        colCNonEmpty: 0,
+        fetchedAt: Date.now(),
+        error: `HTTP ${res.status}: ${errText.slice(0, 200)}`,
+      };
+      lastDiagnostic = diag;
+      return diag;
+    }
+    const data = (await res.json()) as { values?: string[][] };
+    const rows = data.values ?? [];
+    const header = rows[0] ?? [];
+    const dataRows = rows.slice(1);
+    const filledRows = dataRows.filter((r) => r.some((c) => (c ?? "").trim().length > 0)).length;
+    let colB = 0;
+    let colC = 0;
+    for (const r of dataRows) {
+      if ((r[1] ?? "").trim().length > 0) colB++;
+      if ((r[2] ?? "").trim().length > 0) colC++;
+    }
+
+    let guessedFormat: SheetDiagnostic["guessedFormat"] = "unknown";
+    if (filledRows === 0) {
+      guessedFormat = "empty";
+    } else if (header[1]?.trim() === "member_id") {
+      guessedFormat = "post-migration";
+    } else if (
+      typeof header[1] === "string" &&
+      (header[1].includes("닉네임") || /nickname/i.test(header[1]))
+    ) {
+      guessedFormat = "pre-migration";
+    }
+
+    const diag: SheetDiagnostic = {
+      header,
+      rowCount: dataRows.length,
+      filledRows,
+      sampleRows: dataRows.slice(0, 5),
+      guessedFormat,
+      colBNonEmpty: colB,
+      colCNonEmpty: colC,
+      fetchedAt: Date.now(),
+    };
+    lastDiagnostic = diag;
+    return diag;
+  } catch (e) {
+    const diag: SheetDiagnostic = {
+      header: [],
+      rowCount: 0,
+      filledRows: 0,
+      sampleRows: [],
+      guessedFormat: "unknown",
+      colBNonEmpty: 0,
+      colCNonEmpty: 0,
+      fetchedAt: Date.now(),
+      error: e instanceof Error ? e.message : String(e),
+    };
+    lastDiagnostic = diag;
+    return diag;
+  }
+}
+
+async function autoDiagnose(): Promise<void> {
+  await diagnoseSheet();
+  renderApp();
+}
+
+// 레거시 helper — 단일 헤더만 필요할 때 (DevTools 단축).
 async function inspectMemberHeader(): Promise<string[]> {
   const token = getAccessToken();
   const sheetId = getSheetId();
@@ -161,7 +259,9 @@ async function handleSelectSheet(): Promise<void> {
   try {
     await openPicker(token, (sheet) => {
       console.info(`[NRA-SPA] sheet selected: ${sheet.name} (${sheet.id})`);
+      lastDiagnostic = null;
       renderApp();
+      void autoDiagnose();
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -207,6 +307,52 @@ function renderApp(): void {
           <button type="button" id="select-sheet-btn">시트 선택</button>
         `
     : "";
+
+  const diag = authed && sheetId !== null ? lastDiagnostic : null;
+  const diagBlock =
+    diag !== null
+      ? `
+          <h3>🔍 시트 자동 진단 <button type="button" id="rediag-btn" class="inline">↻ 재진단</button></h3>
+          ${
+            diag.error !== undefined
+              ? `<p class="status status--error">진단 실패: ${escapeHtml(diag.error)}</p>`
+              : `
+                  <p class="status">format=<code>${escapeHtml(diag.guessedFormat)}</code> · 채워진 행 ${diag.filledRows}/${diag.rowCount} · Col B 데이터 ${diag.colBNonEmpty} · Col C 데이터 ${diag.colCNonEmpty}</p>
+                  <details open>
+                    <summary>헤더 row 1 (${diag.header.length}개 컬럼)</summary>
+                    <pre><code>${escapeHtml(JSON.stringify(diag.header))}</code></pre>
+                  </details>
+                  ${
+                    diag.sampleRows.length > 0
+                      ? `
+                          <details>
+                            <summary>데이터 샘플 (최대 5행)</summary>
+                            <pre><code>${escapeHtml(diag.sampleRows.map((r, i) => `row${i + 2}: ${JSON.stringify(r)}`).join("\n"))}</code></pre>
+                          </details>
+                        `
+                      : ""
+                  }
+                  ${
+                    diag.guessedFormat === "pre-migration"
+                      ? `<p class="status status--warn">⚠️ 마이그레이션 전 구조 — col-b-reader.ts는 마이그레이션 후 가정. F-NRA-002-08 마이그레이션 (insertDimension Col B) 자동화가 미구현 상태. 임시로 시트에 'member_id' 헤더 컬럼을 Col B 위치에 수동 삽입 후 재진단 권장</p>`
+                      : ""
+                  }
+                  ${
+                    diag.guessedFormat === "empty"
+                      ? `<p class="status status--warn">⚠️ 빈 시트 — 운영자가 가입 순서·닉네임을 먼저 입력해야 매칭 시작 가능 (SHEET_SCHEMA §2.2 마이그레이션 단계). 시트의 Row 2부터 가입 순서(A)·닉네임(C 또는 B)을 채운 뒤 [↻ 재진단] 클릭</p>`
+                      : ""
+                  }
+                  ${
+                    diag.guessedFormat === "post-migration"
+                      ? `<p class="status status--ok">✅ 마이그레이션 후 구조 — 정상</p>`
+                      : ""
+                  }
+                `
+          }
+        `
+      : authed && sheetId !== null
+        ? `<p class="status">🔍 시트 진단 중...</p>`
+        : "";
 
   const payload = authed ? getLastPayload() : null;
   const classification = authed ? getSyncClassification() : null;
@@ -272,6 +418,7 @@ function renderApp(): void {
     <main>
       <section class="auth">${authBlock}</section>
       ${sheetBlock !== "" ? `<section class="sheet">${sheetBlock}</section>` : ""}
+      ${diagBlock !== "" ? `<section class="diagnostic">${diagBlock}</section>` : ""}
       ${payloadBlock !== "" ? `<section class="payload">${payloadBlock}</section>` : ""}
       ${classificationBlock !== "" ? `<section class="classification">${classificationBlock}</section>` : ""}
       ${errorBlock}
@@ -305,6 +452,9 @@ function renderApp(): void {
   document
     .getElementById("run-matching-btn")
     ?.addEventListener("click", () => void runMatching());
+  document
+    .getElementById("rediag-btn")
+    ?.addEventListener("click", () => void autoDiagnose());
 
   clearCountdown();
   if (authed && expiresAt !== null) {
@@ -326,7 +476,13 @@ function bootstrap(): void {
   // 그래야 inject 시 main listener에서 getLastPayload()가 이미 갱신된 값을 반환함.
   initMessageListener();
 
-  window.addEventListener("authStateChange", renderApp);
+  window.addEventListener("authStateChange", () => {
+    if (isAuthenticated() && getSheetId() !== null && lastDiagnostic === null) {
+      void autoDiagnose();
+    } else {
+      renderApp();
+    }
+  });
   window.addEventListener("payloadReceived", () => renderApp());
   window.addEventListener("payloadValidationFailed", () => {
     lastError = "payload 검증 실패 — type/필수 필드 확인";
@@ -360,6 +516,12 @@ function bootstrap(): void {
   window.injectMockPayload = injectMockPayload;
   window.listSheetTabs = listSheetTabs;
   window.inspectMemberHeader = inspectMemberHeader;
+  window.diagnoseSheet = diagnoseSheet;
+
+  // 페이지 로드 시 자동 진단 (로그인 + 시트 둘 다 있을 때)
+  if (isAuthenticated() && getSheetId() !== null) {
+    void autoDiagnose();
+  }
 
   renderApp();
   console.info(`[NRA-SPA] v${APP_VERSION} initialized`);
