@@ -1,0 +1,39 @@
+// F-NRA-002-04 origin + payload validator — Wave A 의존 (실 유저스크립트는 blablalink.com 서브도메인에서 송신).
+// SOT: ai_docs/nikke-raid-autosync/API_SPEC.md §2 / CONSTRAINTS.md §2.
+
+import type { NikkeRaidPayload } from "../types";
+
+// blablalink.com의 직접 서브도메인만 허용 (예: tools.blablalink.com, www.blablalink.com). 다단계 서브도메인 차단.
+export const ALLOWED_ORIGIN_PATTERN = /^https:\/\/[^.]+\.blablalink\.com$/;
+
+export function isAllowedOrigin(origin: string): boolean {
+  return ALLOWED_ORIGIN_PATTERN.test(origin);
+}
+
+function isStringField(obj: Record<string, unknown>, key: string): boolean {
+  return typeof obj[key] === "string";
+}
+
+export function validateNikkeRaidPayload(data: unknown): data is NikkeRaidPayload {
+  if (typeof data !== "object" || data === null) return false;
+  const obj = data as Record<string, unknown>;
+  if (!isStringField(obj, "type")) return false;
+  if (!isStringField(obj, "capturedAt")) return false;
+
+  switch (obj.type) {
+    case "nikke-raid-data":
+      return (
+        Array.isArray(obj.raid) &&
+        Array.isArray(obj.members) &&
+        isStringField(obj, "raidNum")
+      );
+    case "need-login":
+      return true;
+    case "no-data":
+      return isStringField(obj, "reason");
+    case "error":
+      return typeof obj.error === "object" && obj.error !== null;
+    default:
+      return false;
+  }
+}
