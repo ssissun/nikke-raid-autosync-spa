@@ -52,10 +52,23 @@ describe("writeRaidData facade", () => {
       };
     });
 
-    // fetch mock: backup OK + batchUpdate OK
+    // fetch mock: backup 3단계 (addSheet + batchGet + writePUT) + batchUpdate OK
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(new Response("{}", { status: 200 })) // backup addSheet
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            spreadsheetId: "sid",
+            valueRanges: [
+              { range: "유니온 멤버!A1:Z40", values: [["가입 순서"]] },
+              { range: "레이드 통계!A1:P2000", values: [["회차"]] },
+            ],
+          }),
+          { status: 200 }
+        )
+      ) // backup batchGet
+      .mockResolvedValueOnce(new Response("{}", { status: 200 })) // backup writePUT
       .mockResolvedValueOnce(new Response("{}", { status: 200 })); // batchUpdate
 
     const result = await writeRaidData("sid", buildPlan(), "tok", {

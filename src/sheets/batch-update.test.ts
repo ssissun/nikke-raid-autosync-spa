@@ -82,13 +82,17 @@ describe("executeBatchUpdate", () => {
     ).rejects.toThrow(/RATE_LIMIT/);
   });
 
-  it("raidStatsRows 빈 배열 → EMPTY_RAID_ROWS throw", async () => {
-    const plan = { ...buildPlan(), raidStatsRows: [] };
+  it("raidStatsRows + memberSyncroUpdates 둘 다 빈 → EMPTY_PLAN throw", async () => {
+    const plan = {
+      ...buildPlan(),
+      raidStatsRows: [],
+      memberSyncroUpdates: [],
+    };
     await expect(
       executeBatchUpdate("sid", plan, "tok", {
         fetchImpl: vi.fn() as unknown as typeof fetch,
         syncroColumn: "H",
       })
-    ).rejects.toThrow(/EMPTY_RAID_ROWS/);
+    ).rejects.toThrow(/EMPTY_PLAN/);
   });
 });
