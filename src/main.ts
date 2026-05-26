@@ -280,6 +280,21 @@ async function listSheetTabs(): Promise<string[]> {
   return titles;
 }
 
+// Wave A 유저스크립트 cross-tab 트리거 — 사용자 클릭으로 새 탭 open (popup 차단 회피).
+// 새 탭에서 Tampermonkey + Greasyfork userscript 579278가 4 API intercept 후
+// window.opener.postMessage로 본 SPA에 payload 전달.
+function openBlablalinkRaidPage(): void {
+  const w = window.open(
+    "https://www.blablalink.com/shiftyspad/union-raid?lang=ko",
+    "blablalink-union-raid"
+  );
+  if (w === null) {
+    lastError =
+      "팝업이 차단됨 — 주소창 우측 팝업 허용 후 재시도. 유저스크립트(Greasyfork 579278) + Tampermonkey 설치 필요";
+    renderApp();
+  }
+}
+
 async function getLastRaidRow(
   spreadsheetId: string,
   accessToken: string
@@ -524,6 +539,15 @@ function renderApp(): void {
         ? `<p class="status">🔍 시트 진단 중...</p>`
         : "";
 
+  const fetchTriggerBlock =
+    authed && sheetId !== null
+      ? `
+          <h3>🎯 회차 데이터 수집</h3>
+          <p class="meta">Tampermonkey + Greasyfork 유저스크립트 <code>579278</code> 설치 필요. 클릭 시 blablalink.com 새 탭이 열리고 자동으로 4 API를 intercept하여 본 페이지로 postMessage 송신.</p>
+          <button type="button" id="fetch-raid-btn">🎯 신규 회차 데이터 가져오기 (blablalink 새 탭)</button>
+        `
+      : "";
+
   const payload = authed ? getLastPayload() : null;
   const classification = authed ? getSyncClassification() : null;
   const canMatch =
@@ -636,6 +660,7 @@ function renderApp(): void {
       <section class="auth">${authBlock}</section>
       ${sheetBlock !== "" ? `<section class="sheet">${sheetBlock}</section>` : ""}
       ${diagBlock !== "" ? `<section class="diagnostic">${diagBlock}</section>` : ""}
+      ${fetchTriggerBlock !== "" ? `<section class="fetch-trigger">${fetchTriggerBlock}</section>` : ""}
       ${payloadBlock !== "" ? `<section class="payload">${payloadBlock}</section>` : ""}
       ${classificationBlock !== "" ? `<section class="classification">${classificationBlock}</section>` : ""}
       ${dryRunBlock !== "" ? `<section class="dryrun">${dryRunBlock}</section>` : ""}
@@ -682,6 +707,9 @@ function renderApp(): void {
   document
     .getElementById("confirm-write-btn")
     ?.addEventListener("click", () => void confirmWriteFlow());
+  document
+    .getElementById("fetch-raid-btn")
+    ?.addEventListener("click", () => openBlablalinkRaidPage());
 
   clearCountdown();
   if (authed && expiresAt !== null) {
