@@ -20,7 +20,7 @@ import {
   prepareDryRun,
   type BatchUpdatePlan,
 } from "./dryrun";
-import { findRaidColumn, writeRaidData } from "./sheets";
+import { ensureRaidColumn, guessNextRaidNum, writeRaidData } from "./sheets";
 import type { NikkeRaidPayload } from "./types";
 
 const APP_VERSION = "0.1.0";
@@ -337,25 +337,45 @@ async function prepareDryRunFlow(): Promise<void> {
       lastDiagnostic?.guessedFormat === "pre-migration"
         ? "pre-migration"
         : "post-migration";
-    const raidNumStr =
-      payload.raidNum !== undefined && payload.raidNum !== null
-        ? payload.raidNum
-        : "unknown";
-    const syncroColumn = await findRaidColumn(
+
+    // raidNum 결정: payload → 추측 (시트의 max "N차" +1) → throw
+    let raidNumStr: string;
+    if (payload.raidNum !== undefined && payload.raidNum !== null) {
+      raidNumStr = payload.raidNum;
+    } else {
+      const guessed = await guessNextRaidNum(sheetId, token);
+      if (guessed === null) {
+        lastError =
+          "dry-run: raidNum 결정 실패 — 유저스크립트 회차 메타 미캡처 + 시트 기존 회차 데이터도 부재";
+        renderApp();
+        return;
+      }
+      raidNumStr = guessed;
+      console.info(`[NRA-SPA] raidNum 추측: ${raidNumStr}차 (시트 기존 회차 +1)`);
+    }
+
+    // 회차 컬럼 보장 — 없으면 마지막 +1 위치에 신규 헤더 추가
+    const resolution = await ensureRaidColumn(
       sheetId,
       raidNumStr,
       token,
       fetch,
       layout
     );
-    if (syncroColumn === null) {
-      lastError = `dry-run: ${raidNumStr}차 컬럼 없음 (OO차 placeholder 없음)`;
-      renderApp();
-      return;
+    if (resolution.isNew) {
+      console.info(
+        `[NRA-SPA] 신규 회차 컬럼 추가: ${resolution.column} (${raidNumStr}차)`
+      );
+    } else if (resolution.isPlaceholder) {
+      console.info(
+        `[NRA-SPA] OO차 placeholder를 ${raidNumStr}차로 갱신: ${resolution.column}`
+      );
     }
+    const syncroColumn = resolution.column;
+
     const lastRaidRow = await getLastRaidRow(sheetId, token);
     const plan = prepareDryRun({
-      payload,
+      payload: { ...payload, raidNum: raidNumStr },
       classification: classResult.classification,
       alerts: classResult.alerts,
       lastRaidRow,

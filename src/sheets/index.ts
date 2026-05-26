@@ -77,4 +77,14 @@ export async function writeRaidData(
 export { verifyFingerprint, computeFingerprint, ALLOWED_FINGERPRINTS } from "./fingerprint";
 export { createBackupTab } from "./backup";
 export { executeBatchUpdate } from "./batch-update";
-export { findRaidColumn, columnNumberToLetter } from "./find-column";
+export {
+  findRaidColumn,
+  ensureRaidColumn,
+  columnNumberToLetter,
+} from "./find-column";
+export type { RaidColumnResolution, RaidColumnLayout } from "./find-column";
+export {
+  guessNextRaidNum,
+  guessFromMemberHeader,
+  guessFromRaidStats,
+} from "./guess-raid-num";

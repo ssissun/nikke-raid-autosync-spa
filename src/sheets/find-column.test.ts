@@ -1,11 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { columnNumberToLetter, findRaidColumn } from "./find-column";
+import {
+  columnNumberToLetter,
+  ensureRaidColumn,
+  findRaidColumn,
+} from "./find-column";
 
 function mockRow(values: string[]): Response {
   return new Response(
     JSON.stringify({ range: "유니온 멤버!D1:Z1", values: [values] }),
     { status: 200, headers: { "Content-Type": "application/json" } }
   );
+}
+
+function okPut(): Response {
+  return new Response(JSON.stringify({}), { status: 200 });
 }
 
 describe("columnNumberToLetter", () => {
@@ -45,7 +53,6 @@ describe("findRaidColumn (Col B hidden 삽입 후 D 기준)", () => {
       "tok",
       fetchMock as unknown as typeof fetch
     );
-    // OO차 idx=2 → D + 2 = F
     expect(col).toBe("F");
   });
 
@@ -59,7 +66,7 @@ describe("findRaidColumn (Col B hidden 삽입 후 D 기준)", () => {
       "tok",
       fetchMock as unknown as typeof fetch
     );
-    expect(col).toBe("H"); // idx 4 → D+4=H
+    expect(col).toBe("H");
   });
 
   it("회차 컬럼 없음 → null", async () => {
@@ -71,5 +78,93 @@ describe("findRaidColumn (Col B hidden 삽입 후 D 기준)", () => {
       fetchMock as unknown as typeof fetch
     );
     expect(col).toBeNull();
+  });
+});
+
+describe("ensureRaidColumn (SHEET_SCHEMA §2.2 3단계 분기)", () => {
+  it("1) 정확 일치 → isNew=false, isPlaceholder=false, PUT 호출 없음", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(mockRow(["35차", "36차", "37차"]));
+    const r = await ensureRaidColumn(
+      "sid",
+      "36",
+      "tok",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(r.column).toBe("E"); // D + idx 1
+    expect(r.isNew).toBe(false);
+    expect(r.isPlaceholder).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("2) OO차 placeholder → isPlaceholder=true, PUT 1회 (헤더 갱신)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(mockRow(["35차", "OO차"]))
+      .mockResolvedValueOnce(okPut());
+    const r = await ensureRaidColumn(
+      "sid",
+      "36",
+      "tok",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(r.column).toBe("E"); // D + idx 1
+    expect(r.isNew).toBe(false);
+    expect(r.isPlaceholder).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][1]?.method).toBe("PUT");
+  });
+
+  it("3) 둘 다 부재 → 마지막 +1 위치에 신규 헤더 (isNew=true)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(mockRow(["35차", "36차", "37차", "38차", "39차"]))
+      .mockResolvedValueOnce(okPut());
+    const r = await ensureRaidColumn(
+      "sid",
+      "40",
+      "tok",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(r.column).toBe("I"); // D + idx 5 → D(4)+5 = 9 → I
+    expect(r.isNew).toBe(true);
+    expect(r.isPlaceholder).toBe(false);
+    const putCall = fetchMock.mock.calls[1];
+    expect(putCall[1]?.method).toBe("PUT");
+    const body = JSON.parse(putCall[1].body as string);
+    expect(body.values).toEqual([["40차"]]);
+  });
+
+  it("3) pre-migration layout — Col C 기준, 빈 헤더 → 첫 컬럼", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(mockRow([])) // 빈 헤더
+      .mockResolvedValueOnce(okPut());
+    const r = await ensureRaidColumn(
+      "sid",
+      "40",
+      "tok",
+      fetchMock as unknown as typeof fetch,
+      "pre-migration"
+    );
+    expect(r.column).toBe("C"); // C(3) + 0 = C
+    expect(r.isNew).toBe(true);
+  });
+
+  it("3) pre-migration 35-39차 + 신규 40차 → H 컬럼", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(mockRow(["35차", "36차", "37차", "38차", "39차"]))
+      .mockResolvedValueOnce(okPut());
+    const r = await ensureRaidColumn(
+      "sid",
+      "40",
+      "tok",
+      fetchMock as unknown as typeof fetch,
+      "pre-migration"
+    );
+    expect(r.column).toBe("H"); // C(3) + 5 = 8 → H
+    expect(r.isNew).toBe(true);
   });
 });
