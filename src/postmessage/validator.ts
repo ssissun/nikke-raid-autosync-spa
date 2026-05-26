@@ -22,10 +22,14 @@ export function validateNikkeRaidPayload(data: unknown): data is NikkeRaidPayloa
 
   switch (obj.type) {
     case "nikke-raid-data":
+      // raidNum은 ARCHITECTURE §3.1에서 optional. 유저스크립트가
+      // GetUnionRaidLevelInfo를 capture 못 한 경우 null이 들어올 수 있음.
       return (
         Array.isArray(obj.raid) &&
         Array.isArray(obj.members) &&
-        isStringField(obj, "raidNum")
+        (obj.raidNum === undefined ||
+          obj.raidNum === null ||
+          isStringField(obj, "raidNum"))
       );
     case "need-login":
       return true;
