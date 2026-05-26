@@ -33,8 +33,11 @@ export async function executeBatchUpdate(
   const fetchImpl = options.fetchImpl ?? fetch;
   const rateLimitDelay = options.rateLimitDelayMs ?? 60_000;
 
-  if (plan.raidStatsRows.length === 0) {
-    throw new Error("EMPTY_RAID_ROWS: 레이드 통계 행이 없음");
+  if (
+    plan.raidStatsRows.length === 0 &&
+    plan.memberSyncroUpdates.length === 0
+  ) {
+    throw new Error("EMPTY_PLAN: 레이드 통계 행 + 멤버 syncro 모두 없음");
   }
 
   const syncroColumn =
@@ -44,12 +47,13 @@ export async function executeBatchUpdate(
     throw new Error(`COLUMN_NOT_FOUND: ${plan.raidNum}차 열 없음`);
   }
 
-  const data: ValueRange[] = [
-    {
+  const data: ValueRange[] = [];
+  if (plan.raidStatsRows.length > 0 && plan.raidStatsRange.length > 0) {
+    data.push({
       range: plan.raidStatsRange,
       values: plan.raidStatsRows,
-    },
-  ];
+    });
+  }
 
   if (plan.memberSyncroUpdates.length > 0) {
     const sorted = [...plan.memberSyncroUpdates].sort(

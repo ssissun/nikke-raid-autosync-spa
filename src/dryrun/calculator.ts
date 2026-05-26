@@ -63,6 +63,19 @@ export function calculateMemberSyncroUpdates(
       column: syncroColumn,
     });
   }
+  // backfill 마이그레이션의 경우 classification.staying이 비어 있을 수 있고
+  // payload.members 전체가 sheet 1..N에 가입 순서대로 자동 매핑됨.
+  // 이 경우 dryrun에서 payload 순서 그대로 syncro 입력.
+  if (updates.length === 0 && classification.staying.length === 0) {
+    members.forEach((m, idx) => {
+      if (m.synchro_level <= 0) return;
+      updates.push({
+        sheetRow: idx + 2, // header=row1, 데이터 row2부터
+        syncroLevel: m.synchro_level,
+        column: syncroColumn,
+      });
+    });
+  }
   return updates;
 }
 
