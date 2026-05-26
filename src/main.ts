@@ -35,6 +35,7 @@ declare global {
     runMatching?: () => Promise<void>;
     injectMockPayload?: (payload: NikkeRaidPayload) => void;
     listSheetTabs?: () => Promise<string[]>;
+    inspectMemberHeader?: () => Promise<string[]>;
   }
 }
 
@@ -70,6 +71,27 @@ function clearCountdown(): void {
 function injectMockPayload(payload: NikkeRaidPayload): void {
   console.info("[NRA-SPA] injectMockPayload (dev helper)", payload);
   window.dispatchEvent(new CustomEvent("payloadReceived", { detail: payload }));
+}
+
+// Sheets API 진단 — 유니온 멤버 헤더 행(A1:Z1) 확인.
+// 마이그레이션 전(Col A·B·C = 가입순서·닉네임·1차) vs 후(가입순서·member_id·닉네임·1차) 분기 판단용.
+async function inspectMemberHeader(): Promise<string[]> {
+  const token = getAccessToken();
+  const sheetId = getSheetId();
+  if (token === null || sheetId === null) {
+    console.warn("[NRA-SPA] inspectMemberHeader: 로그인/시트 필요");
+    return [];
+  }
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent("유니온 멤버!A1:Z1")}`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) {
+    console.error(`[NRA-SPA] inspectMemberHeader failed: HTTP ${res.status}`);
+    return [];
+  }
+  const data = (await res.json()) as { values?: string[][] };
+  const header = data.values?.[0] ?? [];
+  console.info("[NRA-SPA] 유니온 멤버 헤더 row 1:", header);
+  return header;
 }
 
 // Sheets API 진단 helper — 시트 탭 이름 list 출력 (신버전 사본 호환성 확인용).
@@ -337,6 +359,7 @@ function bootstrap(): void {
   window.runMatching = runMatching;
   window.injectMockPayload = injectMockPayload;
   window.listSheetTabs = listSheetTabs;
+  window.inspectMemberHeader = inspectMemberHeader;
 
   renderApp();
   console.info(`[NRA-SPA] v${APP_VERSION} initialized`);
