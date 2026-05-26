@@ -37,6 +37,7 @@ declare global {
     listSheetTabs?: () => Promise<string[]>;
     inspectMemberHeader?: () => Promise<string[]>;
     diagnoseSheet?: () => Promise<SheetDiagnostic | null>;
+    autofillMemberNicknames?: () => Promise<void>;
   }
 }
 
@@ -170,6 +171,51 @@ async function diagnoseSheet(): Promise<SheetDiagnostic | null> {
 async function autoDiagnose(): Promise<void> {
   await diagnoseSheet();
   renderApp();
+}
+
+// Dev helper — payload의 닉네임을 시트 Col B(마이그레이션 전) 또는 Col C(마이그레이션 후)에 자동 입력.
+// 운영자가 32명 수동 입력 부담 회피. mock payload 검증용.
+async function autofillMemberNicknames(): Promise<void> {
+  const token = getAccessToken();
+  const sheetId = getSheetId();
+  const payload = getLastPayload();
+  if (token === null || sheetId === null) {
+    lastError = "autofill: 로그인/시트 필요";
+    renderApp();
+    return;
+  }
+  if (payload === null || payload.type !== "nikke-raid-data") {
+    lastError = "autofill: payload 미수신 — injectMockPayload 먼저";
+    renderApp();
+    return;
+  }
+  const diag = lastDiagnostic;
+  // 마이그레이션 전 → Col B에 닉네임. 마이그레이션 후 → Col C에 닉네임.
+  const targetCol =
+    diag !== null && diag.guessedFormat === "post-migration" ? "C" : "B";
+  const values = payload.members.map((m) => [m.nickname]);
+  const range = `유니온 멤버!${targetCol}2:${targetCol}${1 + values.length}`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
+  try {
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ values }),
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      lastError = `autofill 실패 HTTP ${res.status}: ${txt.slice(0, 120)}`;
+    } else {
+      lastError = null;
+      console.info(`[NRA-SPA] autofilled ${values.length} 닉네임 → Col ${targetCol}`);
+    }
+  } catch (e) {
+    lastError = e instanceof Error ? e.message : String(e);
+  }
+  await autoDiagnose();
 }
 
 // 레거시 helper — 단일 헤더만 필요할 때 (DevTools 단축).
@@ -334,12 +380,23 @@ function renderApp(): void {
                   }
                   ${
                     diag.guessedFormat === "pre-migration"
-                      ? `<p class="status status--warn">⚠️ 마이그레이션 전 구조 — col-b-reader.ts는 마이그레이션 후 가정. F-NRA-002-08 마이그레이션 (insertDimension Col B) 자동화가 미구현 상태. 임시로 시트에 'member_id' 헤더 컬럼을 Col B 위치에 수동 삽입 후 재진단 권장</p>`
+                      ? `<p class="status status--warn">⚠️ 마이그레이션 전 구조 — col-b-reader가 헤더 자동 감지하여 Col B(닉네임)를 backfill 소스로 처리. Col B에 닉네임이 비어있으면 mock payload로 자동 채움 가능</p>
+                         ${
+                           diag.colBNonEmpty === 0 && getLastPayload() !== null
+                             ? `<button type="button" id="autofill-btn">payload 닉네임으로 시트 Col B 자동 입력 (dev)</button>`
+                             : ""
+                         }`
                       : ""
                   }
                   ${
                     diag.guessedFormat === "empty"
-                      ? `<p class="status status--warn">⚠️ 빈 시트 — 운영자가 가입 순서·닉네임을 먼저 입력해야 매칭 시작 가능 (SHEET_SCHEMA §2.2 마이그레이션 단계). 시트의 Row 2부터 가입 순서(A)·닉네임(C 또는 B)을 채운 뒤 [↻ 재진단] 클릭</p>`
+                      ? `<p class="status status--warn">⚠️ 빈 시트 — 운영자가 가입 순서·닉네임을 먼저 입력해야 매칭 시작 가능 (SHEET_SCHEMA §2.2 마이그레이션 단계).
+                         ${getLastPayload() !== null ? `mock payload 닉네임으로 시트 Col B 자동 입력 가능:` : "Row 2부터 가입 순서(A)·닉네임(B 또는 C)을 채운 뒤 [↻ 재진단] 클릭"}</p>
+                         ${
+                           getLastPayload() !== null
+                             ? `<button type="button" id="autofill-btn">payload 닉네임으로 시트 Col B 자동 입력 (dev)</button>`
+                             : ""
+                         }`
                       : ""
                   }
                   ${
@@ -455,6 +512,9 @@ function renderApp(): void {
   document
     .getElementById("rediag-btn")
     ?.addEventListener("click", () => void autoDiagnose());
+  document
+    .getElementById("autofill-btn")
+    ?.addEventListener("click", () => void autofillMemberNicknames());
 
   clearCountdown();
   if (authed && expiresAt !== null) {
@@ -517,6 +577,7 @@ function bootstrap(): void {
   window.listSheetTabs = listSheetTabs;
   window.inspectMemberHeader = inspectMemberHeader;
   window.diagnoseSheet = diagnoseSheet;
+  window.autofillMemberNicknames = autofillMemberNicknames;
 
   // 페이지 로드 시 자동 진단 (로그인 + 시트 둘 다 있을 때)
   if (isAuthenticated() && getSheetId() !== null) {
