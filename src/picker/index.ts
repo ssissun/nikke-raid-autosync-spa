@@ -1,6 +1,9 @@
 // Google Picker — drive.file scope 요건 충족 (사용자 명시 선택한 시트만 접근 가능).
 // gapi.load + ViewId.SPREADSHEETS 단일 선택 패턴.
+// setDeveloperKey + setAppId 필수 — 누락 시 Picker UI는 작동하나 drive.file
+// server-side 등록이 불완전하여 후속 Sheets API call이 404 떨어짐.
 
+import { GOOGLE_API_KEY, GOOGLE_PROJECT_NUMBER } from "../config";
 import { saveSheetSelection } from "../storage";
 
 declare global {
@@ -49,8 +52,10 @@ export async function openPicker(
   const view = new google.picker.DocsView(google.picker.ViewId.SPREADSHEETS);
 
   const picker = new google.picker.PickerBuilder()
-    .addView(view)
+    .setDeveloperKey(GOOGLE_API_KEY)
+    .setAppId(GOOGLE_PROJECT_NUMBER)
     .setOAuthToken(accessToken)
+    .addView(view)
     .setCallback((data) => {
       const action = data[google.picker.Response.ACTION];
       if (action === google.picker.Action.PICKED) {
