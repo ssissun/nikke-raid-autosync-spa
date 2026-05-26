@@ -33,6 +33,7 @@ declare global {
     clearPayload?: () => void;
     getSyncClassification?: () => ClassificationResult | null;
     runMatching?: () => Promise<void>;
+    injectMockPayload?: (payload: NikkeRaidPayload) => void;
   }
 }
 
@@ -61,6 +62,13 @@ function clearCountdown(): void {
     clearInterval(countdownTimer);
     countdownTimer = null;
   }
+}
+
+// Chrome 보안상 dispatchEvent(new MessageEvent(...))는 origin/data가 listener에 빈값으로 전달됨.
+// 실제 cross-tab postMessage는 Wave A 유저스크립트에서 동작. 본 helper는 DevTools 단독 검증용.
+function injectMockPayload(payload: NikkeRaidPayload): void {
+  console.info("[NRA-SPA] injectMockPayload (dev helper)", payload);
+  window.dispatchEvent(new CustomEvent("payloadReceived", { detail: payload }));
 }
 
 async function runMatching(): Promise<void> {
@@ -160,23 +168,20 @@ function renderApp(): void {
   const payloadBlock = authed
     ? payload === null
       ? `
-          <p class="status">📨 payload 미수신 — blablalink.com 새 탭에서 유저스크립트가 송신하거나, DevTools에서 mock dispatch</p>
+          <p class="status">📨 payload 미수신 — blablalink.com 새 탭에서 유저스크립트가 송신하거나, DevTools에서 mock inject</p>
           <details>
-            <summary>mock payload 발행 (DevTools)</summary>
-            <pre><code>window.dispatchEvent(new MessageEvent("message", {
-  origin: "https://tools.blablalink.com",
-  data: {
-    type: "nikke-raid-data",
-    raidNum: "40",
-    capturedAt: new Date().toISOString(),
-    raid: [],
-    members: [
-      { member_id: "m1", nickname: "테스트A", synchro_level: 420, commander_level: 160, icon_id: "1" },
-      { member_id: "m2", nickname: "테스트B", synchro_level: 415, commander_level: 158, icon_id: "2" }
-    ],
-    meta: { guildId: "g1", areaId: "a1" }
-  }
-}));</code></pre>
+            <summary>mock payload inject (DevTools, 실제 cross-tab은 Wave A 의존)</summary>
+            <pre><code>injectMockPayload({
+  type: "nikke-raid-data",
+  raidNum: "40",
+  capturedAt: new Date().toISOString(),
+  raid: [],
+  members: [
+    { member_id: "m1", nickname: "테스트A", synchro_level: 420, commander_level: 160, icon_id: "1" },
+    { member_id: "m2", nickname: "테스트B", synchro_level: 415, commander_level: 158, icon_id: "2" }
+  ],
+  meta: { guildId: "g1", areaId: "a1" }
+});</code></pre>
           </details>
         `
       : payload.type === "nikke-raid-data"
@@ -299,6 +304,7 @@ function bootstrap(): void {
   window.clearPayload = clearPayload;
   window.getSyncClassification = getSyncClassification;
   window.runMatching = runMatching;
+  window.injectMockPayload = injectMockPayload;
 
   renderApp();
   console.info(`[NRA-SPA] v${APP_VERSION} initialized`);
