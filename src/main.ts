@@ -65,7 +65,7 @@ function renderApp(): void {
   app.innerHTML = `
     <header>
       <h1>NIKKE 레이드 자동 동기화 도구</h1>
-      <p class="meta">v${APP_VERSION} · third-party tool · 사내 한정</p>
+      <p class="meta">v${APP_VERSION} · third-party 도구</p>
     </header>
     <main>
       <section class="auth">${authBlock}</section>
