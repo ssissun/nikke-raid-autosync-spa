@@ -19,6 +19,10 @@ export function getTokenExpiry(): number | null {
   return getAuthState().expiresAt;
 }
 
+export function getEmail(): string | null {
+  return getAuthState().email;
+}
+
 export function login(clientId?: string): void {
   if (clientId !== undefined && clientId !== getInitializedClientId()) {
     initGIS(clientId);
