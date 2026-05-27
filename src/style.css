@@ -115,9 +115,11 @@ main {
 @media (min-width: 960px) {
   main {
     grid-template-columns: 1fr 1fr;
+    /* dense flow — trust(full-width)가 row 사이에 끼어도 fetch-trigger를 row 2 빈 cell로 끌어와 채움.
+       <960px 에서는 1열이라 dense 효과 없음 → DOM 순서 유지됨. */
+    grid-auto-flow: dense;
   }
-  /* 작은 카드(auth · sheet · diagnostic · fetch-trigger)는 2열, 큰 카드는 full-width.
-     DOM 순서상 fetch-trigger는 diagnostic 다음에 와서 row 2 오른쪽에 자동 배치됨. */
+  /* 작은 카드(auth · sheet · diagnostic · fetch-trigger)는 2열, 큰 카드는 full-width. */
   main > section.payload,
   main > section.preview,
   main > section.trust,
@@ -265,6 +267,17 @@ button {
 }
 
 button:disabled {
+  background: var(--hairline);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+/* Primary button disabled — ID selector specificity 가 위 :disabled 보다 높으므로 명시적으로 override */
+button#login-btn:disabled,
+button#fetch-raid-btn:disabled,
+button#apply-all-btn:disabled,
+button#trust-confirm-btn:disabled,
+button#select-sheet-btn:disabled {
   background: var(--hairline);
   color: var(--muted);
   cursor: not-allowed;
