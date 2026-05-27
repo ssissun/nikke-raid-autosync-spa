@@ -33,10 +33,12 @@ import {
   computeFingerprint,
   ensureRaidColumn,
   guessNextRaidNum,
+  migrateToMemberId,
   writeRaidData,
 } from "./sheets";
 import { applyMemberSync, type AutoSyncResult } from "./sync/auto-sync";
 import type { NikkeRaidPayload } from "./types";
+import type { NicknameChange } from "./matching/types";
 
 const APP_VERSION = "0.1.0";
 
@@ -93,9 +95,11 @@ interface ChangesPreview {
   raidNum: string;
   leavingNicknames: string[]; // 시트에만 있는 닉네임 = 탈퇴
   joiningNicknames: string[]; // payload에만 있는 닉네임 = 신규
+  nicknameChanges: NicknameChange[]; // staying 멤버 중 닉네임이 바뀐 항목
   raidStatsRowsCount: number;
   bossNames: string[]; // 이번 회차 보스 distinct list
   layout: "pre-migration" | "post-migration";
+  needsMemberIdMigration: boolean; // layout === pre-migration 일 때 true
 }
 let lastChangesPreview: ChangesPreview | null = null;
 let nonParticipatingNicknames: string[] | null = null;
@@ -655,9 +659,11 @@ async function previewChanges(): Promise<void> {
       raidNum: raidNumStr,
       leavingNicknames,
       joiningNicknames,
+      nicknameChanges: classResult.nicknameChanges,
       raidStatsRowsCount: payload.raid.length,
       bossNames: Array.from(bossSet),
       layout,
+      needsMemberIdMigration: layout === "pre-migration",
     };
     nonParticipatingNicknames = null;
     renderApp();
@@ -709,6 +715,39 @@ async function applyAllChanges(): Promise<void> {
       writeStatus = "idle";
       renderApp();
       return;
+    }
+
+    // 0.5) Pre-migration → Post-migration 자동 마이그레이션
+    // 시트의 Col B 가 닉네임 컬럼이면 member_id 숨김 컬럼을 자동 추가하여
+    // 다음 사용부터 닉네임 변경에도 강건한 member_id 기반 매칭 가능.
+    // fingerprint 영향 없음 (TOOL_OWNED_COLUMNS 에 member_id 등록).
+    //
+    // 주의: 마이그레이션 후 매칭 재실행은 하지 않음.
+    // 이유: post-migration 모드 readColBMap 은 member_id 비어있는 row 의 닉네임을
+    // colBMap 에 안 넣어 leaving 분류에서 누락됨. backfill 모드의 매칭 결과 (unmatched 까지 보존)
+    // 그대로 활용하여 auto-sync 가 정상 leaving 처리하도록 한다.
+    if (lastChangesPreview.needsMemberIdMigration) {
+      const classResult = getSyncClassification();
+      if (classResult === null) {
+        throw new Error("마이그레이션 진행 불가 — 매칭 결과 부재");
+      }
+      const memberIdByRow = new Map<number, string>();
+      for (const s of classResult.classification.staying) {
+        memberIdByRow.set(s.sheetRow, s.member_id);
+      }
+      const migrateResult = await migrateToMemberId(
+        sheetId,
+        token,
+        memberIdByRow
+      );
+      console.info(
+        `[NRA-SPA] member_id 마이그레이션 완료 (${migrateResult.filledRows}건 채움)`
+      );
+      // 후속 단계 layout 동기화 — auto-sync 가 post-migration 분기 타도록.
+      lastChangesPreview.layout = "post-migration";
+      lastChangesPreview.needsMemberIdMigration = false;
+      // 시트 진단만 갱신 (매칭 재실행은 X — backfill 결과를 leaving 처리에 그대로 사용)
+      await diagnoseSheet();
     }
 
     // 1) auto-sync (탈퇴/신규 있을 때만)
@@ -959,6 +998,12 @@ function renderApp(): void {
             <li><strong>이번 회차 보스</strong> (${preview.bossNames.length}종): ${preview.bossNames.map((b) => escapeHtml(b)).join(" · ")}</li>
             <li><strong>탈퇴 멤버</strong> (${preview.leavingNicknames.length}명)${preview.leavingNicknames.length > 0 ? `: ${preview.leavingNicknames.map((n) => escapeHtml(n)).join(", ")}` : ""}</li>
             <li><strong>신규 가입 멤버</strong> (${preview.joiningNicknames.length}명)${preview.joiningNicknames.length > 0 ? `: ${preview.joiningNicknames.map((n) => escapeHtml(n)).join(", ")}` : ""}</li>
+            <li><strong>닉네임 변경 멤버</strong> (${preview.nicknameChanges.length}명)${preview.nicknameChanges.length > 0 ? `: ${preview.nicknameChanges.map((c) => `${escapeHtml(c.old)} → ${escapeHtml(c.new)}`).join(", ")}` : ""}</li>
+            ${
+              preview.needsMemberIdMigration
+                ? `<li><strong>최초 1회 자동 작업</strong>: 시트 <code>유니온 멤버</code> 탭에 <code>member_id</code> 숨김 컬럼이 자동 추가됩니다 (다음 사용부터 닉네임 변경에도 매칭이 정확히 유지됨)</li>`
+                : ""
+            }
           </ul>
           ${
             writeStatus === "idle"
