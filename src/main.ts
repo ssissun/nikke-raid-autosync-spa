@@ -20,7 +20,12 @@ import {
   prepareDryRun,
   type BatchUpdatePlan,
 } from "./dryrun";
-import { ensureRaidColumn, guessNextRaidNum, writeRaidData } from "./sheets";
+import {
+  appendRaidResultRow,
+  ensureRaidColumn,
+  guessNextRaidNum,
+  writeRaidData,
+} from "./sheets";
 import { applyMemberSync, type AutoSyncResult } from "./sync/auto-sync";
 import type { NikkeRaidPayload } from "./types";
 
@@ -417,6 +422,21 @@ async function confirmWriteFlow(): Promise<void> {
     const result = await writeRaidData(sheetId, lastBatchPlan, token, {
       skipFingerprint: true, // ALLOWED_FINGERPRINTS 미실측 — dev 모드 임시 우회
     });
+    // `레이드 결과` 탭에도 새 회차 row 추가 (회차 컬럼만, 다른 컬럼 사용자 입력 대기)
+    try {
+      const rrResult = await appendRaidResultRow(
+        sheetId,
+        lastBatchPlan.raidNum,
+        token
+      );
+      console.info(
+        `[NRA-SPA] 레이드 결과 row 추가: ${rrResult.raidNumCol}${rrResult.sheetRow}` +
+          (rrResult.alreadyExisted ? " (이미 존재)" : "")
+      );
+    } catch (e) {
+      // 부수적 작업 — 실패해도 메인 쓰기는 성공으로 처리
+      console.warn("[NRA-SPA] 레이드 결과 row 추가 실패 (치명적 아님):", e);
+    }
     writeStatus = "done";
     writeResult = result;
     lastError = null;

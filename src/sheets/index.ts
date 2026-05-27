@@ -88,3 +88,5 @@ export {
   guessFromMemberHeader,
   guessFromRaidStats,
 } from "./guess-raid-num";
+export { appendRaidResultRow } from "./raid-result";
+export type { AppendRaidResultResult } from "./raid-result";
