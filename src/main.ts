@@ -1030,10 +1030,7 @@ function renderApp(): void {
       ? `
           <h3>⚠️ 등록되지 않은 시트 구조 감지</h3>
           <p class="status status--error">
-            이 시트의 구조 hash가 도구가 알고 있는 마스터 템플릿과 일치하지 않습니다.
-          </p>
-          <p class="meta">
-            시트 fingerprint: <code>${escapeHtml(pendingTrust.hash.slice(0, 16))}...</code>
+            선택된 시트의 구조가 도구가 알고 있는 템플릿과 일치하지 않습니다.
           </p>
           <details open>
             <summary><strong>📛 발생 가능한 문제</strong></summary>
@@ -1059,7 +1056,7 @@ function renderApp(): void {
             ).join("")}
           </ul>
           <button type="button" id="trust-confirm-btn" ${allChecked ? "" : "disabled"}>✅ 이 시트를 신뢰하고 진행 (${pendingTrust.checkedItems.size}/${TRUST_CHECKLIST.length})</button>
-          <p class="meta">신뢰하지 않으려면 상단 <strong>[변경]</strong> 버튼으로 다른 시트를 선택해주세요.</p>
+          <p class="meta">신뢰하지 않으면 상단 <strong>[변경]</strong> 버튼으로 다른 시트를 선택해주세요.</p>
         `
       : "";
 
