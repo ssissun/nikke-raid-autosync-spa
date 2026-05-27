@@ -16,6 +16,28 @@ function okPut(): Response {
   return new Response(JSON.stringify({}), { status: 200 });
 }
 
+// 시트 grid info 응답 — '유니온 멤버' 탭 sheetId=1 + columnCount 지정
+function gridInfoResponse(columnCount: number): Response {
+  return new Response(
+    JSON.stringify({
+      sheets: [
+        {
+          properties: {
+            sheetId: 1,
+            title: "유니온 멤버",
+            gridProperties: { rowCount: 33, columnCount },
+          },
+        },
+      ],
+    }),
+    { status: 200 }
+  );
+}
+
+function okBatchUpdate(): Response {
+  return new Response(JSON.stringify({}), { status: 200 });
+}
+
 describe("columnNumberToLetter", () => {
   it("기본 매핑 A=1, D=4, H=8, Z=26", () => {
     expect(columnNumberToLetter(1)).toBe("A");
@@ -98,10 +120,11 @@ describe("ensureRaidColumn (SHEET_SCHEMA §2.2 3단계 분기)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("2) OO차 placeholder → isPlaceholder=true, PUT 1회 (헤더 갱신)", async () => {
+  it("2) OO차 placeholder → isPlaceholder=true (grid 확장 불필요 path)", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(mockRow(["35차", "OO차"]))
+      .mockResolvedValueOnce(gridInfoResponse(10)) // 이미 충분
       .mockResolvedValueOnce(okPut());
     const r = await ensureRaidColumn(
       "sid",
@@ -112,14 +135,16 @@ describe("ensureRaidColumn (SHEET_SCHEMA §2.2 3단계 분기)", () => {
     expect(r.column).toBe("E"); // D + idx 1
     expect(r.isNew).toBe(false);
     expect(r.isPlaceholder).toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[1][1]?.method).toBe("PUT");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[2][1]?.method).toBe("PUT");
   });
 
-  it("3) 둘 다 부재 → 마지막 +1 위치에 신규 헤더 (isNew=true)", async () => {
+  it("3) 둘 다 부재 → grid 확장 + 마지막 +1 신규 헤더", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(mockRow(["35차", "36차", "37차", "38차", "39차"]))
+      .mockResolvedValueOnce(gridInfoResponse(7)) // 부족 → expand 필요
+      .mockResolvedValueOnce(okBatchUpdate()) // appendDimension
       .mockResolvedValueOnce(okPut());
     const r = await ensureRaidColumn(
       "sid",
@@ -130,16 +155,23 @@ describe("ensureRaidColumn (SHEET_SCHEMA §2.2 3단계 분기)", () => {
     expect(r.column).toBe("I"); // D + idx 5 → D(4)+5 = 9 → I
     expect(r.isNew).toBe(true);
     expect(r.isPlaceholder).toBe(false);
-    const putCall = fetchMock.mock.calls[1];
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    const putCall = fetchMock.mock.calls[3];
     expect(putCall[1]?.method).toBe("PUT");
     const body = JSON.parse(putCall[1].body as string);
     expect(body.values).toEqual([["40차"]]);
+    // appendDimension 검증
+    const buCall = fetchMock.mock.calls[2];
+    const buBody = JSON.parse(buCall[1].body as string);
+    expect(buBody.requests[0].appendDimension.dimension).toBe("COLUMNS");
+    expect(buBody.requests[0].appendDimension.length).toBe(2); // 9 - 7 = 2
   });
 
   it("3) pre-migration layout — Col C 기준, 빈 헤더 → 첫 컬럼", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(mockRow([])) // 빈 헤더
+      .mockResolvedValueOnce(gridInfoResponse(3)) // 충분
       .mockResolvedValueOnce(okPut());
     const r = await ensureRaidColumn(
       "sid",
@@ -152,10 +184,12 @@ describe("ensureRaidColumn (SHEET_SCHEMA §2.2 3단계 분기)", () => {
     expect(r.isNew).toBe(true);
   });
 
-  it("3) pre-migration 35-39차 + 신규 40차 → H 컬럼", async () => {
+  it("3) pre-migration 35-39차 + 신규 40차 → H 컬럼 (grid 7 → 8 확장)", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(mockRow(["35차", "36차", "37차", "38차", "39차"]))
+      .mockResolvedValueOnce(gridInfoResponse(7)) // 7컬럼 → H(8) 필요 → +1 expand
+      .mockResolvedValueOnce(okBatchUpdate())
       .mockResolvedValueOnce(okPut());
     const r = await ensureRaidColumn(
       "sid",
@@ -166,5 +200,7 @@ describe("ensureRaidColumn (SHEET_SCHEMA §2.2 3단계 분기)", () => {
     );
     expect(r.column).toBe("H"); // C(3) + 5 = 8 → H
     expect(r.isNew).toBe(true);
+    const buBody = JSON.parse(fetchMock.mock.calls[2][1].body as string);
+    expect(buBody.requests[0].appendDimension.length).toBe(1); // 8 - 7 = 1
   });
 });
