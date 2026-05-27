@@ -1,3 +1,5 @@
+import { ensureSheetGrid } from "./grid";
+
 // F-NRA-002-07 회차 컬럼 자동 탐색 + 부재 시 신규 추가.
 // 마이그레이션 후: 회차 컬럼은 Col D부터 (A=가입순서, B=member_id, C=닉네임, D+=회차)
 // 마이그레이션 전: 회차 컬럼은 Col C부터 (A=가입순서, B=닉네임, C+=회차)
@@ -74,7 +76,7 @@ export async function findRaidColumn(
 /**
  * columnLetter "A"→1, "Z"→26, "AA"→27, "AZ"→52 변환 (역연산).
  */
-function columnLetterToNumber(letter: string): number {
+export function columnLetterToNumber(letter: string): number {
   let n = 0;
   for (const ch of letter.toUpperCase()) {
     const code = ch.charCodeAt(0);
@@ -84,69 +86,6 @@ function columnLetterToNumber(letter: string): number {
   return n;
 }
 
-interface SheetProperties {
-  sheetId: number;
-  title?: string;
-  gridProperties?: { rowCount?: number; columnCount?: number };
-}
-
-interface SpreadsheetGetResponse {
-  sheets?: Array<{ properties?: SheetProperties }>;
-}
-
-/**
- * `유니온 멤버` 탭의 grid columnCount 가 needed 미만이면 appendDimension 으로 확장.
- * Sheets API 가 grid 밖 셀 쓰기 시 400 반환하므로 사전 확장 필수.
- */
-async function ensureMemberGridColumns(
-  spreadsheetId: string,
-  requiredCols: number,
-  accessToken: string,
-  fetchImpl: typeof fetch
-): Promise<void> {
-  const infoUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets(properties(sheetId,title,gridProperties))`;
-  const infoRes = await fetchImpl(infoUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!infoRes.ok) {
-    throw new Error(`GRID_INFO_FAILED: HTTP ${infoRes.status}`);
-  }
-  const body = (await infoRes.json()) as SpreadsheetGetResponse;
-  const found = (body.sheets ?? []).find(
-    (s) => s.properties?.title === "유니온 멤버"
-  );
-  if (found === undefined || found.properties === undefined) {
-    throw new Error("GRID_INFO_FAILED: '유니온 멤버' 탭 부재");
-  }
-  const currentCols = found.properties.gridProperties?.columnCount ?? 0;
-  if (currentCols >= requiredCols) return;
-
-  const additional = requiredCols - currentCols;
-  const buUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`;
-  const buRes = await fetchImpl(buUrl, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      requests: [
-        {
-          appendDimension: {
-            sheetId: found.properties.sheetId,
-            dimension: "COLUMNS",
-            length: additional,
-          },
-        },
-      ],
-    }),
-  });
-  if (!buRes.ok) {
-    const errText = await buRes.text().catch(() => "");
-    throw new Error(`GRID_EXPAND_FAILED: HTTP ${buRes.status} ${errText.slice(0, 120)}`);
-  }
-}
-
 async function writeColumnHeader(
   spreadsheetId: string,
   column: string,
@@ -154,11 +93,13 @@ async function writeColumnHeader(
   accessToken: string,
   fetchImpl: typeof fetch
 ): Promise<void> {
-  // grid 한계 초과 방지 — 먼저 columnCount 확장
+  // grid 한계 초과 방지 — 먼저 columnCount 확장 (rowCount는 기존 유지)
   const requiredCols = columnLetterToNumber(column);
   if (requiredCols > 0) {
-    await ensureMemberGridColumns(
+    await ensureSheetGrid(
       spreadsheetId,
+      "유니온 멤버",
+      0, // rowCount 변경 없음
       requiredCols,
       accessToken,
       fetchImpl
@@ -180,7 +121,6 @@ async function writeColumnHeader(
   }
 }
 
-export { columnLetterToNumber };
 
 /**
  * SHEET_SCHEMA §2.2 3단계 분기 완전 구현.

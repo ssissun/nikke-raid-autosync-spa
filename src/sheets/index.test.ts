@@ -52,7 +52,30 @@ describe("writeRaidData facade", () => {
       };
     });
 
-    // fetch mock: backup 3단계 (addSheet + batchGet + writePUT) + batchUpdate OK
+    // fetch mock: backup 3단계 (addSheet + batchGet + writePUT) + grid 확장 2 + batchUpdate OK
+    const gridSufficient = () =>
+      new Response(
+        JSON.stringify({
+          sheets: [
+            {
+              properties: {
+                sheetId: 1,
+                title: "레이드 통계",
+                gridProperties: { rowCount: 1000, columnCount: 16 },
+              },
+            },
+            {
+              properties: {
+                sheetId: 2,
+                title: "유니온 멤버",
+                gridProperties: { rowCount: 33, columnCount: 26 },
+              },
+            },
+          ],
+        }),
+        { status: 200 }
+      );
+
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(new Response("{}", { status: 200 })) // backup addSheet
@@ -69,6 +92,8 @@ describe("writeRaidData facade", () => {
         )
       ) // backup batchGet
       .mockResolvedValueOnce(new Response("{}", { status: 200 })) // backup writePUT
+      .mockResolvedValueOnce(gridSufficient()) // ensureSheetGrid(레이드 통계)
+      .mockResolvedValueOnce(gridSufficient()) // ensureSheetGrid(유니온 멤버)
       .mockResolvedValueOnce(new Response("{}", { status: 200 })); // batchUpdate
 
     const result = await writeRaidData("sid", buildPlan(), "tok", {

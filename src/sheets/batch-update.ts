@@ -2,9 +2,19 @@
 // 429 Rate Limit 시 60s 후 1회 재시도.
 
 import type { BatchUpdatePlan } from "../dryrun/calculator";
-import { findRaidColumn } from "./find-column";
+import { columnLetterToNumber, findRaidColumn } from "./find-column";
+import { ensureSheetGrid } from "./grid";
 
 const UNION_MEMBER_SHEET = "유니온 멤버";
+const RAID_STATS_SHEET = "레이드 통계";
+
+/**
+ * `range`(예: "레이드 통계!A467:P562")에서 끝 row 번호 추출.
+ */
+function extractEndRow(range: string): number {
+  const m = range.match(/:[A-Z]+(\d+)$/);
+  return m ? Number.parseInt(m[1], 10) : 0;
+}
 
 interface ValueRange {
   range: string;
@@ -49,6 +59,18 @@ export async function executeBatchUpdate(
 
   const data: ValueRange[] = [];
   if (plan.raidStatsRows.length > 0 && plan.raidStatsRange.length > 0) {
+    // `레이드 통계` 탭의 rowCount 가 endRow 미만이면 사전 확장
+    const endRow = extractEndRow(plan.raidStatsRange);
+    if (endRow > 0) {
+      await ensureSheetGrid(
+        spreadsheetId,
+        RAID_STATS_SHEET,
+        endRow,
+        16, // 16-col 헤드리스 고정
+        accessToken,
+        fetchImpl
+      );
+    }
     data.push({
       range: plan.raidStatsRange,
       values: plan.raidStatsRows,
@@ -65,6 +87,19 @@ export async function executeBatchUpdate(
     for (let r = startRow; r <= endRow; r++) {
       const found = sorted.find((u) => u.sheetRow === r);
       values.push([found !== undefined ? String(found.syncroLevel) : ""]);
+    }
+    // `유니온 멤버` 탭의 columnCount 가 syncroColumn 미만이면 사전 확장
+    // (ensureRaidColumn 에서 이미 확장되었어야 하지만 방어적)
+    const requiredCols = columnLetterToNumber(syncroColumn);
+    if (requiredCols > 0) {
+      await ensureSheetGrid(
+        spreadsheetId,
+        UNION_MEMBER_SHEET,
+        endRow,
+        requiredCols,
+        accessToken,
+        fetchImpl
+      );
     }
     data.push({
       range: `${UNION_MEMBER_SHEET}!${syncroColumn}${startRow}:${syncroColumn}${endRow}`,
@@ -97,6 +132,7 @@ export async function executeBatchUpdate(
     }
   }
   if (!res.ok) {
-    throw new Error(`BATCH_UPDATE_FAILED: HTTP ${res.status}`);
+    const errText = await res.text().catch(() => "");
+    throw new Error(`BATCH_UPDATE_FAILED: HTTP ${res.status} ${errText.slice(0, 200)}`);
   }
 }
