@@ -116,8 +116,8 @@ main {
   main {
     grid-template-columns: 1fr 1fr;
   }
-  /* 작은 카드 (auth · sheet · diagnostic) 는 2열, 나머지는 full-width */
-  main > section.fetch-trigger,
+  /* 작은 카드(auth · sheet · diagnostic · fetch-trigger)는 2열, 큰 카드는 full-width.
+     DOM 순서상 fetch-trigger는 diagnostic 다음에 와서 row 2 오른쪽에 자동 배치됨. */
   main > section.payload,
   main > section.preview,
   main > section.trust,

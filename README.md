@@ -8,7 +8,7 @@
 
 **[도구 열기 → https://ssissun.github.io/nikke-raid-autosync-spa/](https://ssissun.github.io/nikke-raid-autosync-spa/)**
 
-처음 사용 시 [사용자 가이드](./USER_GUIDE.md)를 먼저 읽어주세요.
+처음 사용 시 [간편 가이드](./SIMPLE_USER_GUIDE.md) 또는 [전체 사용자 가이드](./USER_GUIDE.md)를 먼저 읽어주세요.
 
 ## 핵심 기능
 
@@ -47,7 +47,8 @@
 
 ## 관련 링크
 
-- **사용자 가이드**: [USER_GUIDE.md](./USER_GUIDE.md)
+- **간편 가이드**: [SIMPLE_USER_GUIDE.md](./SIMPLE_USER_GUIDE.md)
+- **전체 사용자 가이드**: [USER_GUIDE.md](./USER_GUIDE.md)
 - **유저스크립트**: [Greasyfork 579278](https://greasyfork.org/scripts/579278)
 - **유저스크립트 repo**: [nikke-raid-autosync-userscript](https://github.com/ssissun/nikke-raid-autosync-userscript)
 - **NIKKE 유레 시트 (원본 + 설명)**: [arca.live/b/nikketgv/161405505](https://arca.live/b/nikketgv/161405505)
