@@ -381,8 +381,10 @@ async function listSheetTabs(): Promise<string[]> {
 // 새 탭에서 Tampermonkey + Greasyfork userscript 579278가 4 API intercept 후
 // window.opener.postMessage로 본 SPA에 payload 전달.
 function openBlablalinkRaidPage(): void {
+  // ?nra=1 — userscript SPA-only trigger 식별자
+  // userscript 는 이 query param 이 있을 때만 active (일반 blablalink 사용 시 차단)
   const w = window.open(
-    "https://www.blablalink.com/shiftyspad/union-raid?lang=ko",
+    "https://www.blablalink.com/shiftyspad/union-raid?lang=ko&nra=1",
     "blablalink-union-raid"
   );
   if (w === null) {
