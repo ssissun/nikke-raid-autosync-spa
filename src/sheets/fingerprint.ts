@@ -1,8 +1,19 @@
-// F-NRA-002-07 SHA-256 fingerprint — 옵션 B: 도구 추가 컬럼(member_id) + _nra_ 탭 제외.
-// 마스터 원본 헤더만 hash → oddoido 협조 불필요, 도구 추가로 인한 fingerprint 변경 없음.
+// F-NRA-002-07 SHA-256 fingerprint — 옵션 B: 도구 추가 영역 제외 + 회차 컬럼 OO차 placeholder normalize.
+// 마스터 원본 헤더 구조만 hash → 회차 진행 + 도구 추가에 무관하게 안정.
+//
+// 검증 대상:
+//   유니온 멤버 헤더: 가입 순서 / 닉네임 / OO차 (회차 컬럼 placeholder 단일)
+//   레이드 통계 헤더: 16 컬럼 그대로
+//
+// 자동 제외:
+//   - TOOL_OWNED_COLUMNS (member_id) — 도구 자동 추가
+//   - TOOL_OWNED_TAB_PREFIX (_nra_) — 도구 자동 추가 탭 prefix
+//   - 회차 컬럼 (\d+차 / OO차) — 단일 "OO차" 로 normalize (회차 진행 무관)
 
 const TOOL_OWNED_COLUMNS = new Set<string>(["member_id"]);
 const TOOL_OWNED_TAB_PREFIX = "_nra_";
+const RAID_COLUMN_PATTERN = /^(?:\d+|OO)차$/;
+const RAID_COLUMN_PLACEHOLDER = "OO차";
 
 // 실측 시트 fingerprint 등록 후 채움. 빈 배열이면 항상 MISMATCH.
 export const ALLOWED_FINGERPRINTS: readonly string[] = [];
@@ -49,12 +60,29 @@ export async function computeFingerprint(
     throw new Error("FINGERPRINT_READ_FAILED: 헤더 행이 비어 있음");
   }
 
-  const masterColumns = memberHeader.filter(
-    (col) =>
-      !TOOL_OWNED_COLUMNS.has(col) && !String(col).startsWith(TOOL_OWNED_TAB_PREFIX)
-  );
+  const masterColumns: string[] = [];
+  let raidColumnSeen = false;
+  for (const col of memberHeader) {
+    const trimmed = String(col ?? "").trim();
+    if (trimmed.length === 0) continue;
+    if (TOOL_OWNED_COLUMNS.has(trimmed)) continue;
+    if (trimmed.startsWith(TOOL_OWNED_TAB_PREFIX)) continue;
+    // 회차 컬럼 (35차, 36차, ..., OO차) 은 단일 OO차 placeholder 로 normalize.
+    // 회차 진행에 따라 컬럼이 추가되어도 hash 안정.
+    if (RAID_COLUMN_PATTERN.test(trimmed)) {
+      if (!raidColumnSeen) {
+        masterColumns.push(RAID_COLUMN_PLACEHOLDER);
+        raidColumnSeen = true;
+      }
+      continue;
+    }
+    masterColumns.push(trimmed);
+  }
 
-  const raw = [...masterColumns, ...raidStatsHeader].map((h) => h.trim()).join("|");
+  const raw = [
+    ...masterColumns,
+    ...raidStatsHeader.map((h) => String(h ?? "").trim()),
+  ].join("|");
   const encoded = new TextEncoder().encode(raw);
   const digest = await crypto.subtle.digest("SHA-256", encoded);
   return hex(digest);
