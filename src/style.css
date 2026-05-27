@@ -1,0 +1,394 @@
+/* NIKKE 유레 자동 동기화 도구 — UI 스타일 시스템
+   DESIGN.md (Notion 스타일 시스템 차용) 기반.
+   - 색: Notion purple primary + navy + ink + pastel tints + semantic
+   - 폰트: Pretendard (한글) + Inter (영문) fallback
+   - rounded: 버튼 8px, 카드 12px
+*/
+
+:root {
+  /* Brand */
+  --primary: #5848B7;
+  --primary-pressed: #4538A0;
+  --primary-deep: #3B2E80;
+  --brand-navy: #1F1E27;
+
+  /* Surface */
+  --canvas: #ffffff;
+  --surface: #F7F7F5;
+  --surface-soft: #FAFAF8;
+  --hairline: #E9E9E7;
+  --hairline-soft: #EFEFEC;
+  --hairline-strong: #D3D3CE;
+
+  /* Text */
+  --ink-deep: #0F0F0F;
+  --ink: #191918;
+  --charcoal: #3F3E3B;
+  --slate: #5D5D5A;
+  --steel: #787875;
+  --stone: #9B9B98;
+  --muted: #B9B9B5;
+  --on-dark: #ffffff;
+
+  /* Semantic */
+  --success: #1F7C42;
+  --success-bg: #E7F3EB;
+  --warning: #A56A0F;
+  --warning-bg: #FDF5E2;
+  --error: #B33A2C;
+  --error-bg: #FBE9E6;
+
+  /* Pastels */
+  --tint-sky: #E3F1FA;
+  --tint-mint: #E7F3EB;
+  --tint-lavender: #EEEAF7;
+
+  /* Spacing */
+  --gap-xs: 4px;
+  --gap-sm: 8px;
+  --gap-md: 12px;
+  --gap-lg: 16px;
+  --gap-xl: 24px;
+  --gap-2xl: 32px;
+  --gap-3xl: 48px;
+
+  /* Radius */
+  --rounded-sm: 6px;
+  --rounded-md: 8px;
+  --rounded-lg: 12px;
+  --rounded-full: 9999px;
+
+  /* Shadow */
+  --shadow-sm: 0 1px 2px rgba(15, 15, 15, 0.04);
+  --shadow-md: 0 4px 12px rgba(15, 15, 15, 0.08);
+  --shadow-lg: 0 16px 48px -8px rgba(15, 15, 15, 0.16);
+
+  /* Typography */
+  --font-sans:
+    "Pretendard Variable", "Pretendard",
+    "Inter", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", "Helvetica Neue", Helvetica, Arial,
+    "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+}
+
+/* Reset + base */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--surface);
+  color: var(--ink);
+  line-height: 1.55;
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: var(--gap-3xl) var(--gap-xl);
+}
+
+@media (max-width: 640px) {
+  #app {
+    padding: var(--gap-xl) var(--gap-lg);
+  }
+}
+
+/* Header */
+header {
+  margin-bottom: var(--gap-2xl);
+  padding-bottom: var(--gap-xl);
+  border-bottom: 1px solid var(--hairline);
+}
+
+header h1 {
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.5px;
+  margin: 0 0 var(--gap-xs) 0;
+  color: var(--ink-deep);
+}
+
+header .meta {
+  margin: 0;
+  color: var(--steel);
+  font-size: 14px;
+}
+
+/* Sections — card style */
+main > section {
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: var(--rounded-lg);
+  padding: var(--gap-xl);
+  margin-bottom: var(--gap-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+main > section.hint {
+  background: var(--surface);
+  border: none;
+  box-shadow: none;
+  padding: var(--gap-md) var(--gap-lg);
+  margin-top: var(--gap-2xl);
+  color: var(--steel);
+  font-size: 13px;
+}
+
+main > section.hint p {
+  margin: var(--gap-xs) 0;
+}
+
+main > section.error {
+  background: var(--error-bg);
+  border-color: var(--error);
+}
+
+main > section.error p {
+  color: var(--error);
+  margin: 0;
+}
+
+main > section.trust {
+  background: var(--warning-bg);
+  border-color: var(--warning);
+}
+
+/* Headings inside sections */
+section h3 {
+  margin: 0 0 var(--gap-md) 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  color: var(--ink-deep);
+}
+
+section p {
+  margin: var(--gap-sm) 0;
+}
+
+/* Status messages */
+.status {
+  margin: var(--gap-sm) 0;
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.status--ok {
+  color: var(--success);
+}
+
+.status--warn {
+  color: var(--warning);
+}
+
+.status--error {
+  color: var(--error);
+}
+
+.meta {
+  color: var(--steel);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.expiry {
+  color: var(--steel);
+  font-size: 13px;
+  margin: var(--gap-xs) 0 var(--gap-md);
+}
+
+code {
+  font-family:
+    "JetBrains Mono", "SF Mono", Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  background: var(--surface);
+  padding: 2px 6px;
+  border-radius: var(--rounded-sm);
+  color: var(--charcoal);
+}
+
+/* Buttons */
+button {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+  padding: 10px 18px;
+  border-radius: var(--rounded-md);
+  border: none;
+  cursor: pointer;
+  transition: background-color 150ms ease, color 150ms ease;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-xs);
+}
+
+button:disabled {
+  background: var(--hairline);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+/* Primary button — Notion purple */
+button#login-btn,
+button#fetch-raid-btn,
+button#apply-all-btn,
+button#trust-confirm-btn,
+button#select-sheet-btn {
+  background: var(--primary);
+  color: var(--on-dark);
+}
+
+button#login-btn:hover:not(:disabled),
+button#fetch-raid-btn:hover:not(:disabled),
+button#apply-all-btn:hover:not(:disabled),
+button#trust-confirm-btn:hover:not(:disabled),
+button#select-sheet-btn:hover:not(:disabled) {
+  background: var(--primary-pressed);
+}
+
+/* Secondary button — outlined */
+button#logout-btn,
+button#change-sheet-btn,
+button#rediag-btn {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--hairline-strong);
+}
+
+button#logout-btn:hover,
+button#change-sheet-btn:hover,
+button#rediag-btn:hover {
+  background: var(--surface);
+}
+
+button.inline {
+  padding: 4px 10px;
+  font-size: 13px;
+  margin-left: var(--gap-sm);
+}
+
+/* Changes preview list */
+ul.changes {
+  list-style: none;
+  padding: 0;
+  margin: var(--gap-md) 0;
+}
+
+ul.changes li {
+  padding: var(--gap-sm) 0;
+  border-bottom: 1px solid var(--hairline-soft);
+  font-size: 14px;
+}
+
+ul.changes li:last-child {
+  border-bottom: none;
+}
+
+ul.changes li strong {
+  color: var(--ink-deep);
+  margin-right: var(--gap-sm);
+}
+
+/* Trust checklist */
+ul.trust-checklist {
+  list-style: none;
+  padding: 0;
+  margin: var(--gap-md) 0 var(--gap-lg);
+}
+
+ul.trust-checklist li {
+  padding: var(--gap-sm) 0;
+}
+
+ul.trust-checklist label {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--gap-sm);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--charcoal);
+}
+
+ul.trust-checklist input[type="checkbox"] {
+  margin-top: 3px;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+ul.trust-checklist input[type="checkbox"]:checked + span {
+  color: var(--ink);
+}
+
+/* Alerts list (errors / warnings inside sections) */
+ul.alerts {
+  background: var(--warning-bg);
+  border-left: 3px solid var(--warning);
+  padding: var(--gap-sm) var(--gap-lg);
+  margin: var(--gap-md) 0;
+  list-style: none;
+  border-radius: 0 var(--rounded-md) var(--rounded-md) 0;
+}
+
+ul.alerts li {
+  padding: 2px 0;
+  font-size: 13px;
+  color: var(--charcoal);
+}
+
+/* Inline links */
+a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+a:hover {
+  color: var(--primary-pressed);
+}
+
+/* Details / summary (info-disclosure) */
+details {
+  margin: var(--gap-sm) 0;
+}
+
+details summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--steel);
+  user-select: none;
+}
+
+details pre {
+  background: var(--surface);
+  border-radius: var(--rounded-md);
+  padding: var(--gap-md);
+  font-size: 12px;
+  overflow-x: auto;
+  margin: var(--gap-sm) 0;
+}
+
+/* Loading state */
+#app > p:only-child {
+  color: var(--steel);
+  text-align: center;
+  padding: var(--gap-3xl);
+}
