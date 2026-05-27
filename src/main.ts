@@ -681,13 +681,13 @@ function renderApp(): void {
             !classification.isComplete &&
             (classification.unmatchedSheetNicknames.length > 0 ||
               classification.unmatchedPayloadMembers.length > 0)
-              ? `<p class="meta">↑ 시트 정정이 필요해. <strong>자동 처리</strong> 시 시트에서 매칭 실패 닉네임 row가 삭제되고(가입 순서 재번호) payload 신규 닉네임이 마지막 행 다음에 추가돼.</p>
+              ? `<p class="meta">↑ 시트 정정이 필요해. <strong>자동 처리</strong> 시 탈퇴자 row 아래 데이터를 한 칸씩 위로 shift (Col A 가입순서 1..32 보존) → 빈 슬롯에 신규 가입자 입력 → 정원 32명 검증.</p>
                  <button type="button" id="auto-sync-btn">🔄 탈퇴/신규 자동 처리 (leaving ${classification.unmatchedSheetNicknames.length} + joining ${classification.unmatchedPayloadMembers.length})</button>`
               : ""
           }
           ${
             lastAutoSync !== null
-              ? `<p class="status status--ok">✅ auto-sync 완료 — 삭제 ${lastAutoSync.removedRows.length}행 / 추가 ${lastAutoSync.addedRows.length}행</p>`
+              ? `<p class="status status--ok">✅ auto-sync 완료 — leaving ${lastAutoSync.removedRows.length}건 shift + joining ${lastAutoSync.addedRows.length}건 입력 · 빈 슬롯 ${lastAutoSync.emptySlotsBefore} → ${lastAutoSync.emptySlotsAfter}</p>`
               : ""
           }
           ${
