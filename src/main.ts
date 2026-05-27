@@ -1,5 +1,6 @@
 // SPA 진입점 — F-NRA-002-02 OAuth 와이어링 적용.
 
+import "./style.css";
 import { getAccessToken, getEmail, getTokenExpiry, isAuthenticated, login, logout } from "./auth";
 import { GOOGLE_CLIENT_ID } from "./config";
 import {
@@ -875,8 +876,8 @@ function renderApp(): void {
         <button type="button" id="logout-btn">로그아웃</button>
       `
     : `
-        <p class="status">로그인 필요</p>
-        <button type="button" id="login-btn">Google 로그인 (drive.file scope)</button>
+        <p class="status">시작하려면 Google 계정으로 로그인해주세요.</p>
+        <button type="button" id="login-btn">Google 로그인</button>
       `;
 
   const sheetId = authed ? getSheetId() : null;
@@ -888,7 +889,7 @@ function renderApp(): void {
           <button type="button" id="change-sheet-btn">변경</button>
         `
       : `
-          <p class="status">사본 시트를 선택해주세요 (drive.file scope — 명시 선택한 파일만 접근)</p>
+          <p class="status">본인이 만든 NIKKE 유레 시트 사본을 선택해주세요.</p>
           <button type="button" id="select-sheet-btn">시트 선택</button>
         `
     : "";
@@ -897,62 +898,23 @@ function renderApp(): void {
   const diagBlock =
     diag !== null
       ? `
-          <h3>🔍 시트 자동 진단 <button type="button" id="rediag-btn" class="inline">↻ 재진단</button></h3>
+          <h3>🔍 시트 검증 <button type="button" id="rediag-btn" class="inline">↻ 다시 검증</button></h3>
           ${
             diag.error !== undefined
-              ? `<p class="status status--error">진단 실패: ${escapeHtml(diag.error)}</p>`
+              ? `<p class="status status--error">시트 정보를 읽을 수 없습니다. 다시 시도해주세요.</p>`
               : `
-                  <p class="status">format=<code>${escapeHtml(diag.guessedFormat)}</code> · 채워진 행 ${diag.filledRows}/${diag.rowCount} · Col B 데이터 ${diag.colBNonEmpty} · Col C 데이터 ${diag.colCNonEmpty}</p>
-                  <details open>
-                    <summary>헤더 row 1 (${diag.header.length}개 컬럼)</summary>
-                    <pre><code>${escapeHtml(JSON.stringify(diag.header))}</code></pre>
-                  </details>
-                  ${
-                    diag.sampleRows.length > 0
-                      ? `
-                          <details>
-                            <summary>데이터 샘플 (최대 5행)</summary>
-                            <pre><code>${escapeHtml(diag.sampleRows.map((r, i) => `row${i + 2}: ${JSON.stringify(r)}`).join("\n"))}</code></pre>
-                          </details>
-                        `
-                      : ""
-                  }
-                  ${
-                    diag.guessedFormat === "pre-migration"
-                      ? `<p class="status status--warn">⚠️ 마이그레이션 전 구조 — col-b-reader가 헤더 자동 감지하여 Col B(닉네임)를 backfill 소스로 처리. Col B에 닉네임이 비어있으면 mock payload로 자동 채움 가능</p>
-                         ${
-                           diag.colBNonEmpty === 0 && getLastPayload() !== null
-                             ? `<button type="button" id="autofill-btn">payload 닉네임으로 시트 Col B 자동 입력 (dev)</button>`
-                             : ""
-                         }`
-                      : ""
-                  }
-                  ${
-                    diag.guessedFormat === "empty"
-                      ? `<p class="status status--warn">⚠️ 빈 시트 — 운영자가 가입 순서·닉네임을 먼저 입력해야 매칭 시작 가능 (SHEET_SCHEMA §2.2 마이그레이션 단계).
-                         ${getLastPayload() !== null ? `mock payload 닉네임으로 시트 Col B 자동 입력 가능:` : "Row 2부터 가입 순서(A)·닉네임(B 또는 C)을 채운 뒤 [↻ 재진단] 클릭"}</p>
-                         ${
-                           getLastPayload() !== null
-                             ? `<button type="button" id="autofill-btn">payload 닉네임으로 시트 Col B 자동 입력 (dev)</button>`
-                             : ""
-                         }`
-                      : ""
-                  }
-                  ${
-                    diag.guessedFormat === "post-migration"
-                      ? `<p class="status status--ok">✅ 마이그레이션 후 구조 — 정상</p>`
-                      : ""
-                  }
                   ${
                     pendingTrust !== null
-                      ? `<p class="status status--error">⛔ 시트 구조 fingerprint 미등록 — 아래 신뢰 다이얼로그에서 검토 후 진행 가능</p>`
-                      : `<p class="status status--ok">🔐 시트 구조 fingerprint 검증 통과</p>`
+                      ? `<p class="status status--error">⛔ 이 시트는 도구가 알고 있는 구조와 일치하지 않습니다. 아래 안내를 확인해주세요.</p>`
+                      : diag.guessedFormat === "empty"
+                        ? `<p class="status status--warn">⚠️ 시트가 비어있습니다. <strong>유니온 멤버</strong> 탭에 가입 순서대로 닉네임을 32명 입력한 뒤 <strong>[↻ 다시 검증]</strong>을 눌러주세요.</p>`
+                        : `<p class="status status--ok">✅ 시트 구조 검증 통과 (유니온 멤버 ${diag.colBNonEmpty + diag.colCNonEmpty > 0 ? `${Math.max(diag.colBNonEmpty, diag.colCNonEmpty)}명 인식` : ""})</p>`
                   }
                 `
           }
         `
       : authed && sheetId !== null
-        ? `<p class="status">🔍 시트 진단 중...</p>`
+        ? `<p class="status">🔍 시트 검증 중...</p>`
         : "";
 
   // hash 미일치 시 이후 버튼 모두 비활성화 — 사용자가 신뢰 다이얼로그 통과 후에만 진행 가능
@@ -960,25 +922,30 @@ function renderApp(): void {
   const fetchTriggerBlock =
     authed && sheetId !== null
       ? `
-          <h3>🎯 회차 데이터 수집</h3>
-          <p class="meta">Tampermonkey + Greasyfork 유저스크립트 <code>579278</code> 설치 필요. 클릭 시 blablalink.com 새 탭이 열리고 자동으로 4 API를 intercept하여 본 페이지로 postMessage 송신.</p>
-          <button type="button" id="fetch-raid-btn" ${trustGate ? "disabled" : ""}>🎯 신규 회차 데이터 가져오기 (blablalink 새 탭)</button>
+          <h3>🎯 회차 데이터 가져오기</h3>
+          <p class="meta">
+            아래 버튼을 누르면 blablalink.com이 새 탭에서 열리고, 회차 데이터를 자동으로 수집해서 이 페이지로 가져옵니다.
+          </p>
+          <p class="meta">
+            처음 사용하시는 분은
+            <a href="https://www.tampermonkey.net/" target="_blank" rel="noopener noreferrer">Tampermonkey 확장프로그램</a>과
+            <a href="https://greasyfork.org/scripts/579278" target="_blank" rel="noopener noreferrer">전용 유저스크립트</a>를 먼저 설치해주세요.
+          </p>
+          <button type="button" id="fetch-raid-btn" ${trustGate ? "disabled" : ""}>🎯 신규 회차 데이터 가져오기</button>
         `
       : "";
 
   const payload = authed ? getLastPayload() : null;
 
   // 2-button 흐름 — payload 수신 시 자동으로 previewChanges 호출 → lastChangesPreview 채워짐.
-  const payloadBlock = authed
+  const payloadBlock = authed && sheetId !== null && !trustGate
     ? payload === null
-      ? `
-          <p class="status">📨 데이터 미수신 — <strong>🎯 신규 회차 데이터 가져오기</strong> 클릭 후 blablalink 새 탭에서 자동 수집 대기</p>
-        `
+      ? ""
       : payload.type === "nikke-raid-data"
         ? lastChangesPreview === null
-          ? `<p class="status">📨 데이터 수신 — 변경사항 계산 중...</p>`
+          ? `<p class="status">📨 데이터를 받았습니다. 변경사항을 계산 중...</p>`
           : ""
-        : `<p class="status">📨 payload type=${escapeHtml(payload.type)} — 처리 불가</p>`
+        : `<p class="status status--warn">데이터를 가져오지 못했습니다. blablalink 로그인 상태와 유저스크립트 설치를 확인해주세요.</p>`
     : "";
 
   const preview = lastChangesPreview;
@@ -1035,12 +1002,12 @@ function renderApp(): void {
             선택된 시트의 구조가 도구가 알고 있는 템플릿과 일치하지 않습니다.
           </p>
           <details open>
-            <summary><strong>📛 발생 가능한 문제</strong></summary>
+            <summary><strong>📛 그대로 진행하면 발생할 수 있는 문제</strong></summary>
             <ul class="alerts">
-              <li>도구가 정확히 의존하는 컬럼·탭 구조가 다르면 데이터가 잘못된 위치에 쓰여 시트 손상</li>
-              <li>레이드 통계 16-col 매핑 어긋남 → 보스명/돌파/딜량 등이 잘못된 컬럼에 입력</li>
-              <li>유니온 멤버 매칭 실패 또는 잘못된 멤버 row 에 syncro 입력</li>
-              <li>backup 탭은 생성되지만 손상된 데이터 복원 부담은 사용자에게 있음</li>
+              <li>시트의 잘못된 위치에 데이터가 입력되어 기존 데이터가 손상될 수 있습니다.</li>
+              <li>레이드 결과의 보스명·돌파·딜량 등이 잘못된 칸에 들어갈 수 있습니다.</li>
+              <li>멤버 매칭이 실패하거나 다른 멤버 행에 싱크로 레벨이 입력될 수 있습니다.</li>
+              <li>백업 탭은 자동 생성되지만, 손상된 데이터 복원은 사용자가 직접 해야 합니다.</li>
             </ul>
           </details>
           <p class="meta">
@@ -1076,8 +1043,8 @@ function renderApp(): void {
 
   app.innerHTML = `
     <header>
-      <h1>NIKKE 레이드 자동 동기화 도구</h1>
-      <p class="meta">v${APP_VERSION} · third-party 도구</p>
+      <h1>NIKKE 유레 자동 동기화 도구</h1>
+      <p class="meta">레이드 결과 + 멤버 싱크로 레벨을 본인 시트 사본에 자동 입력</p>
     </header>
     <main>
       <section class="auth">${authBlock}</section>
@@ -1089,7 +1056,8 @@ function renderApp(): void {
       ${previewBlock !== "" ? `<section class="preview">${previewBlock}</section>` : ""}
       ${errorBlock}
       <section class="hint">
-        <p>이 도구는 <code>blablalink.com</code> 새 탭에서 postMessage를 수신해 사본 시트를 자동으로 갱신합니다.</p>
+        <p>처음 사용하시는 분은 <a href="https://github.com/ssissun/nikke-raid-autosync-spa/blob/main/USER_GUIDE.md" target="_blank" rel="noopener noreferrer">사용자 가이드</a>를 확인해주세요.</p>
+        <p>문의·피드백: <a href="https://arca.live/b/nikketgv/161405505" target="_blank" rel="noopener noreferrer">arca.live 게시글</a></p>
       </section>
     </main>
   `;
