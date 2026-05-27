@@ -90,3 +90,4 @@ export {
 } from "./guess-raid-num";
 export { appendRaidResultRow } from "./raid-result";
 export type { AppendRaidResultResult } from "./raid-result";
+export { migrateToMemberId } from "./migrate-to-member-id";
