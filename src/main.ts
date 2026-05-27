@@ -15,12 +15,19 @@ import {
   getLastPayload,
   initMessageListener,
 } from "./postmessage";
-import { clearStorage, getSheetId, getSheetName } from "./storage";
+import {
+  addUserFingerprint,
+  clearStorage,
+  getSheetId,
+  getSheetName,
+  getUserFingerprints,
+} from "./storage";
 import {
   prepareDryRun,
   type BatchUpdatePlan,
 } from "./dryrun";
 import {
+  ALLOWED_FINGERPRINTS,
   appendRaidResultRow,
   computeFingerprint,
   ensureRaidColumn,
@@ -91,6 +98,46 @@ interface ChangesPreview {
 }
 let lastChangesPreview: ChangesPreview | null = null;
 let nonParticipatingNicknames: string[] | null = null;
+
+// 신뢰 다이얼로그 (Hybrid fingerprint — BUILT_IN 미일치 시 사용자 옵트인)
+interface TrustDialogState {
+  hash: string;
+  checkedItems: Set<string>;
+}
+let pendingTrust: TrustDialogState | null = null;
+
+const TRUST_CHECKLIST: ReadonlyArray<{ id: string; label: string }> = [
+  {
+    id: "tab-union-member",
+    label:
+      "<code>유니온 멤버</code> 탭이 존재하며 헤더가 <code>가입 순서 / 닉네임</code> (또는 <code>가입 순서 / member_id / 닉네임</code>) 구조이다",
+  },
+  {
+    id: "tab-raid-stats",
+    label:
+      "<code>레이드 통계</code> 탭이 존재하며 16개 컬럼 헤더(<code>회차 / 닉네임 / 보스명 / 단계 / 1~5번 자리·돌파 / 딜량 / 막타 여부</code>)가 정확히 일치한다",
+  },
+  {
+    id: "tab-raid-result",
+    label:
+      "<code>레이드 결과</code> 탭이 존재하며 <code>회차</code> 컬럼이 있다",
+  },
+  {
+    id: "is-operational",
+    label:
+      "본인이 운영하는 NIKKE 유니온 레이드 시트이다 (백업·테스트 사본 또는 다른 프로젝트 시트가 아님)",
+  },
+  {
+    id: "header-untouched",
+    label:
+      "시트 헤더 컬럼명을 임의로 수정한 적 없거나, 수정했어도 도구 동작에 영향 없음을 확인했다",
+  },
+  {
+    id: "responsibility",
+    label:
+      "잘못된 위치에 쓰이거나 데이터 손상 발생 시 본인이 복원 책임을 진다는 점에 동의한다",
+  },
+];
 
 let countdownTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -434,7 +481,11 @@ async function confirmWriteFlow(): Promise<void> {
 
   try {
     const result = await writeRaidData(sheetId, lastBatchPlan, token, {
-      skipFingerprint: false, // F-NRA-004-01 활성화 — 시트 구조 검증 강제
+      skipFingerprint: false,
+      allowedFingerprints: [
+        ...ALLOWED_FINGERPRINTS,
+        ...getUserFingerprints(),
+      ],
     });
     // `레이드 결과` 탭에도 새 회차 row 추가 (회차 컬럼만, 다른 컬럼 사용자 입력 대기)
     try {
@@ -617,6 +668,17 @@ async function applyAllChanges(): Promise<void> {
   try {
     lastError = null;
 
+    // 0) Fingerprint 사전 검증 (Hybrid — BUILT_IN + USER_REGISTERED)
+    const fingerprint = await computeFingerprint(sheetId, token);
+    const allowed = [...ALLOWED_FINGERPRINTS, ...getUserFingerprints()];
+    if (!allowed.includes(fingerprint)) {
+      // 신뢰 다이얼로그 표시 — 사용자 옵트인 흐름 진입
+      pendingTrust = { hash: fingerprint, checkedItems: new Set() };
+      writeStatus = "idle";
+      renderApp();
+      return;
+    }
+
     // 1) auto-sync (탈퇴/신규 있을 때만)
     const classResult = getSyncClassification();
     if (
@@ -670,9 +732,14 @@ async function applyAllChanges(): Promise<void> {
     });
     lastBatchPlan = plan;
 
-    // 4) 실제 쓰기
+    // 4) 실제 쓰기 — Hybrid allowed list (BUILT_IN + USER_REGISTERED) 전달.
+    //    사전 0 단계에서 이미 검증했지만 방어적 재검증 (allowed 일관 유지).
     const result = await writeRaidData(sheetId, plan, token, {
-      skipFingerprint: true,
+      skipFingerprint: false,
+      allowedFingerprints: [
+        ...ALLOWED_FINGERPRINTS,
+        ...getUserFingerprints(),
+      ],
     });
 
     // 5) 레이드 결과 row 추가 (부수)
@@ -918,6 +985,48 @@ function renderApp(): void {
         `
       : "";
 
+  // Hybrid fingerprint 신뢰 다이얼로그 — BUILT_IN 미일치 시 사용자 옵트인
+  const allChecked =
+    pendingTrust !== null &&
+    TRUST_CHECKLIST.every((item) => pendingTrust!.checkedItems.has(item.id));
+  const trustBlock =
+    pendingTrust !== null
+      ? `
+          <h3>⚠️ 등록되지 않은 시트 구조 감지</h3>
+          <p class="status status--error">
+            이 시트의 구조 hash가 도구가 알고 있는 마스터 템플릿과 일치하지 않습니다.
+          </p>
+          <p class="meta">
+            시트 fingerprint: <code>${escapeHtml(pendingTrust.hash.slice(0, 16))}...</code>
+          </p>
+          <details open>
+            <summary><strong>📛 발생 가능한 문제</strong></summary>
+            <ul class="alerts">
+              <li>도구가 정확히 의존하는 컬럼·탭 구조가 다르면 데이터가 잘못된 위치에 쓰여 시트 손상</li>
+              <li>레이드 통계 16-col 매핑 어긋남 → 보스명/돌파/딜량 등이 잘못된 컬럼에 입력</li>
+              <li>유니온 멤버 매칭 실패 또는 잘못된 멤버 row 에 syncro 입력</li>
+              <li>backup 탭은 생성되지만 손상된 데이터 복원 부담은 사용자에게 있음</li>
+            </ul>
+          </details>
+          <p class="meta">
+            <strong>이 시트를 신뢰하려면 아래 항목을 모두 직접 확인 후 체크해주세요.</strong>
+          </p>
+          <ul class="trust-checklist">
+            ${TRUST_CHECKLIST.map(
+              (item) => `
+              <li>
+                <label>
+                  <input type="checkbox" class="trust-check" data-id="${escapeHtml(item.id)}" ${pendingTrust!.checkedItems.has(item.id) ? "checked" : ""}>
+                  <span>${item.label}</span>
+                </label>
+              </li>`
+            ).join("")}
+          </ul>
+          <button type="button" id="trust-confirm-btn" ${allChecked ? "" : "disabled"}>✅ 이 시트를 신뢰하고 진행 (${pendingTrust.checkedItems.size}/${TRUST_CHECKLIST.length})</button>
+          <button type="button" id="trust-cancel-btn">취소</button>
+        `
+      : "";
+
   // Legacy 변수 — UI 블록은 사용 안 하지만 DevTools 호출용 함수 보존을 위해 변수 유지
   const classification = authed ? getSyncClassification() : null;
   void classification;
@@ -942,6 +1051,7 @@ function renderApp(): void {
       ${fetchTriggerBlock !== "" ? `<section class="fetch-trigger">${fetchTriggerBlock}</section>` : ""}
       ${payloadBlock !== "" ? `<section class="payload">${payloadBlock}</section>` : ""}
       ${previewBlock !== "" ? `<section class="preview">${previewBlock}</section>` : ""}
+      ${trustBlock !== "" ? `<section class="trust">${trustBlock}</section>` : ""}
       ${errorBlock}
       <section class="hint">
         <p>이 도구는 <code>blablalink.com</code> 새 탭에서 postMessage를 수신해 사본 시트를 자동으로 갱신합니다.</p>
@@ -993,6 +1103,46 @@ function renderApp(): void {
   document
     .getElementById("apply-all-btn")
     ?.addEventListener("click", () => void applyAllChanges());
+
+  // 신뢰 체크리스트 체크 이벤트 — pendingTrust.checkedItems 갱신 + 재렌더
+  document.querySelectorAll<HTMLInputElement>(".trust-check").forEach((el) => {
+    el.addEventListener("change", () => {
+      if (pendingTrust === null) return;
+      const id = el.dataset.id;
+      if (id === undefined) return;
+      if (el.checked) {
+        pendingTrust.checkedItems.add(id);
+      } else {
+        pendingTrust.checkedItems.delete(id);
+      }
+      renderApp();
+    });
+  });
+
+  document
+    .getElementById("trust-confirm-btn")
+    ?.addEventListener("click", () => {
+      if (pendingTrust === null) return;
+      const allDone = TRUST_CHECKLIST.every((it) =>
+        pendingTrust!.checkedItems.has(it.id)
+      );
+      if (!allDone) return;
+      addUserFingerprint(pendingTrust.hash);
+      console.info(
+        `[NRA-SPA] 사용자 신뢰 등록 — fingerprint: ${pendingTrust.hash.slice(0, 16)}...`
+      );
+      pendingTrust = null;
+      // 자동 재시도 — applyAllChanges 재실행
+      void applyAllChanges();
+    });
+
+  document
+    .getElementById("trust-cancel-btn")
+    ?.addEventListener("click", () => {
+      pendingTrust = null;
+      lastError = "시트 신뢰 취소됨 — 다른 시트 선택 또는 시트 구조 확인 후 재시도";
+      renderApp();
+    });
 
   clearCountdown();
   if (authed && expiresAt !== null) {

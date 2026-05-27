@@ -4,6 +4,7 @@ export const STORAGE_KEYS = {
   SHEET_ID: "nikke_spa_sheet_id",
   SHEET_NAME: "nikke_spa_sheet_name",
   MEMBER_MAPPING: "nikke_spa_member_mapping",
+  USER_FINGERPRINTS: "nikke_spa_user_fingerprints",
 } as const;
 
 export type StorageKey = (typeof STORAGE_KEYS)[keyof typeof STORAGE_KEYS];

@@ -65,15 +65,45 @@ export function saveMemberMapping(mapping: Record<string, string>): void {
 }
 
 export function clearStorage(): void {
-  // 3 키 명시 — sheet_id, sheet_name, member_mapping
+  // 4 키 명시 — sheet_id, sheet_name, member_mapping, user_fingerprints
   try {
     localStorage.removeItem(STORAGE_KEYS.SHEET_ID);
     localStorage.removeItem(STORAGE_KEYS.SHEET_NAME);
     localStorage.removeItem(STORAGE_KEYS.MEMBER_MAPPING);
+    localStorage.removeItem(STORAGE_KEYS.USER_FINGERPRINTS);
   } catch {
     // localStorage 접근 실패 — Map fallback 정리
   }
   sessionFallback.delete(STORAGE_KEYS.SHEET_ID);
   sessionFallback.delete(STORAGE_KEYS.SHEET_NAME);
   sessionFallback.delete(STORAGE_KEYS.MEMBER_MAPPING);
+  sessionFallback.delete(STORAGE_KEYS.USER_FINGERPRINTS);
+}
+
+/**
+ * 사용자가 옵트인으로 신뢰한 시트의 fingerprint hash 목록.
+ * 코드 hardcoded BUILT_IN 과 합쳐 verifyFingerprint 의 allowed 로 사용.
+ * 신뢰 다이얼로그에서 사용자 명시 동의 시에만 push.
+ */
+export function getUserFingerprints(): string[] {
+  const raw = safeGet(STORAGE_KEYS.USER_FINGERPRINTS);
+  if (raw === null) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      safeRemove(STORAGE_KEYS.USER_FINGERPRINTS);
+      return [];
+    }
+    return parsed.filter((v): v is string => typeof v === "string");
+  } catch {
+    safeRemove(STORAGE_KEYS.USER_FINGERPRINTS);
+    return [];
+  }
+}
+
+export function addUserFingerprint(hash: string): void {
+  const current = getUserFingerprints();
+  if (current.includes(hash)) return;
+  const updated = [...current, hash];
+  safeSet(STORAGE_KEYS.USER_FINGERPRINTS, JSON.stringify(updated));
 }
