@@ -1,6 +1,6 @@
 // SPA 진입점 — F-NRA-002-02 OAuth 와이어링 적용.
 
-import { getAccessToken, getTokenExpiry, isAuthenticated, login, logout } from "./auth";
+import { getAccessToken, getEmail, getTokenExpiry, isAuthenticated, login, logout } from "./auth";
 import { GOOGLE_CLIENT_ID } from "./config";
 import {
   clearSyncClassification,
@@ -77,6 +77,18 @@ type WriteStatus = "idle" | "running" | "done" | "error";
 let writeStatus: WriteStatus = "idle";
 const writeStages: Record<string, string> = {};
 let writeResult: { backupTabName: string } | null = null;
+
+// 변경 미리보기 (2-button 흐름) — payload 수신 시 자동 계산.
+interface ChangesPreview {
+  raidNum: string;
+  leavingNicknames: string[]; // 시트에만 있는 닉네임 = 탈퇴
+  joiningNicknames: string[]; // payload에만 있는 닉네임 = 신규
+  raidStatsRowsCount: number;
+  bossNames: string[]; // 이번 회차 보스 distinct list
+  layout: "pre-migration" | "post-migration";
+}
+let lastChangesPreview: ChangesPreview | null = null;
+let nonParticipatingNicknames: string[] | null = null;
 
 let countdownTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -503,6 +515,196 @@ async function autoSyncMembers(): Promise<void> {
   }
 }
 
+/**
+ * 2-button 흐름 1단계 — payload 수신 후 자동 호출.
+ * 자동 매칭 + 변경사항 미리보기 계산. 실제 시트 변경 없음.
+ */
+async function previewChanges(): Promise<void> {
+  const token = getAccessToken();
+  const sheetId = getSheetId();
+  const payload = getLastPayload();
+  if (token === null || sheetId === null || payload === null) return;
+  if (payload.type !== "nikke-raid-data") return;
+
+  try {
+    lastError = null;
+    // 1) 자동 매칭
+    clearSyncClassification();
+    await startClassificationFlow(token, sheetId, payload.members);
+    const classResult = getSyncClassification();
+    if (classResult === null) return;
+
+    // 2) raidNum 결정
+    let raidNumStr: string;
+    if (payload.raidNum !== undefined && payload.raidNum !== null) {
+      raidNumStr = payload.raidNum;
+    } else {
+      const guessed = await guessNextRaidNum(sheetId, token);
+      if (guessed === null) {
+        lastError =
+          "raidNum 결정 실패 — 유저스크립트 회차 메타 미캡처 + 시트 기존 회차 데이터도 부재";
+        renderApp();
+        return;
+      }
+      raidNumStr = guessed;
+    }
+
+    // 3) 변경사항 추출
+    const leavingNicknames = classResult.unmatchedSheetNicknames.map(
+      (u) => u.nickname
+    );
+    const joiningNicknames = classResult.unmatchedPayloadMembers.map(
+      (m) => m.nickname
+    );
+    const bossSet = new Set<string>();
+    for (const row of payload.raid) {
+      const boss = row[2];
+      if (typeof boss === "string" && boss.length > 0) bossSet.add(boss);
+    }
+    const layout =
+      lastDiagnostic?.guessedFormat === "pre-migration"
+        ? "pre-migration"
+        : "post-migration";
+
+    lastChangesPreview = {
+      raidNum: raidNumStr,
+      leavingNicknames,
+      joiningNicknames,
+      raidStatsRowsCount: payload.raid.length,
+      bossNames: Array.from(bossSet),
+      layout,
+    };
+    nonParticipatingNicknames = null;
+    renderApp();
+  } catch (e) {
+    if (e instanceof SyncError) {
+      lastError = `${e.code}: ${e.message}`;
+    } else {
+      lastError = e instanceof Error ? e.message : String(e);
+    }
+    console.error("[NRA-SPA] previewChanges error", e);
+    renderApp();
+  }
+}
+
+/**
+ * 2-button 흐름 2단계 — 사용자 클릭으로 호출.
+ * auto-sync (필요 시) → 재매칭 → dry-run plan → writeRaidData → appendRaidResultRow → 미참여 알림.
+ */
+async function applyAllChanges(): Promise<void> {
+  const token = getAccessToken();
+  const sheetId = getSheetId();
+  const payload = getLastPayload();
+  if (
+    token === null ||
+    sheetId === null ||
+    payload === null ||
+    payload.type !== "nikke-raid-data" ||
+    lastChangesPreview === null
+  ) {
+    lastError = "조건 미충족 (로그인/시트/payload/preview 필요)";
+    renderApp();
+    return;
+  }
+
+  writeStatus = "running";
+  for (const k of Object.keys(writeStages)) delete writeStages[k];
+  writeResult = null;
+  renderApp();
+
+  try {
+    lastError = null;
+
+    // 1) auto-sync (탈퇴/신규 있을 때만)
+    const classResult = getSyncClassification();
+    if (
+      classResult !== null &&
+      (classResult.unmatchedSheetNicknames.length > 0 ||
+        classResult.unmatchedPayloadMembers.length > 0)
+    ) {
+      lastAutoSync = await applyMemberSync(
+        sheetId,
+        token,
+        classResult.unmatchedSheetNicknames,
+        classResult.unmatchedPayloadMembers,
+        { layout: lastChangesPreview.layout }
+      );
+      console.info("[NRA-SPA] auto-sync 완료", lastAutoSync);
+      // 시트 변경 후 재진단 + 재매칭 (member_id 매칭 새로)
+      await diagnoseSheet();
+      clearSyncClassification();
+      await startClassificationFlow(token, sheetId, payload.members);
+    }
+
+    // 2) 회차 컬럼 보장
+    const raidNumStr = lastChangesPreview.raidNum;
+    const resolution = await ensureRaidColumn(
+      sheetId,
+      raidNumStr,
+      token,
+      fetch,
+      lastChangesPreview.layout
+    );
+    const syncroColumn = resolution.column;
+
+    // 3) dry-run plan
+    const lastRaidRow = await getLastRaidRow(sheetId, token);
+    const targetLabel = `${raidNumStr}차`;
+    const normalizedRaid = payload.raid.map((row) => {
+      const next = [...row] as typeof row;
+      next[0] = targetLabel;
+      return next;
+    });
+    const refreshedClass = getSyncClassification();
+    if (refreshedClass === null) {
+      throw new Error("재매칭 결과 부재");
+    }
+    const plan = prepareDryRun({
+      payload: { ...payload, raidNum: raidNumStr, raid: normalizedRaid },
+      classification: refreshedClass.classification,
+      alerts: refreshedClass.alerts,
+      lastRaidRow,
+      syncroColumn,
+    });
+    lastBatchPlan = plan;
+
+    // 4) 실제 쓰기
+    const result = await writeRaidData(sheetId, plan, token, {
+      skipFingerprint: true,
+    });
+
+    // 5) 레이드 결과 row 추가 (부수)
+    try {
+      const rrResult = await appendRaidResultRow(sheetId, raidNumStr, token);
+      console.info(
+        `[NRA-SPA] 레이드 결과 row 추가: ${rrResult.raidNumCol}${rrResult.sheetRow}` +
+          (rrResult.alreadyExisted ? " (이미 존재)" : "")
+      );
+    } catch (e) {
+      console.warn("[NRA-SPA] 레이드 결과 row 추가 실패 (치명적 아님):", e);
+    }
+
+    // 6) 미참여 멤버 계산 — staying 닉네임 중 payload.raid 에 한 번도 안 나온 닉네임
+    const participatingNames = new Set<string>();
+    for (const row of payload.raid) {
+      const nick = row[1];
+      if (typeof nick === "string" && nick.length > 0) participatingNames.add(nick);
+    }
+    const allMemberNicknames = payload.members.map((m) => m.nickname);
+    nonParticipatingNicknames = allMemberNicknames.filter(
+      (n) => !participatingNames.has(n)
+    );
+
+    writeStatus = "done";
+    writeResult = result;
+  } catch (e) {
+    writeStatus = "error";
+    lastError = e instanceof Error ? e.message : String(e);
+    console.error("[NRA-SPA] applyAllChanges error", e);
+  }
+  renderApp();
+}
+
 async function runMatching(): Promise<void> {
   const token = getAccessToken();
   const sheetId = getSheetId();
@@ -565,9 +767,10 @@ function renderApp(): void {
   const remainingText =
     authed && expiresAt !== null ? formatRemaining(expiresAt - Date.now()) : "";
 
+  const email = authed ? getEmail() : null;
   const authBlock = authed
     ? `
-        <p class="status status--ok">✅ 로그인됨 · drive.file scope</p>
+        <p class="status status--ok">✅ 로그인됨${email !== null ? ` · <strong>${escapeHtml(email)}</strong>` : ""}</p>
         <p class="expiry">토큰 만료까지 <span id="countdown">${escapeHtml(remainingText)}</span></p>
         <button type="button" id="logout-btn">로그아웃</button>
       `
@@ -582,7 +785,6 @@ function renderApp(): void {
     ? sheetId !== null && sheetName !== null
       ? `
           <p class="status status--ok">📄 현재 시트: <strong>${escapeHtml(sheetName)}</strong></p>
-          <p class="meta">ID: <code>${escapeHtml(sheetId)}</code></p>
           <button type="button" id="change-sheet-btn">변경</button>
         `
       : `
@@ -658,126 +860,68 @@ function renderApp(): void {
       : "";
 
   const payload = authed ? getLastPayload() : null;
-  const classification = authed ? getSyncClassification() : null;
-  const canMatch =
-    authed &&
-    sheetId !== null &&
-    payload !== null &&
-    payload.type === "nikke-raid-data";
 
+  // 2-button 흐름 — payload 수신 시 자동으로 previewChanges 호출 → lastChangesPreview 채워짐.
   const payloadBlock = authed
     ? payload === null
       ? `
-          <p class="status">📨 payload 미수신 — blablalink.com 새 탭에서 유저스크립트가 송신하거나, DevTools에서 mock inject</p>
-          <details>
-            <summary>mock payload inject (DevTools, 실제 cross-tab은 Wave A 의존)</summary>
-            <pre><code>injectMockPayload({
-  type: "nikke-raid-data",
-  raidNum: "40",
-  capturedAt: new Date().toISOString(),
-  raid: [],
-  members: [
-    { member_id: "m1", nickname: "테스트A", synchro_level: 420, commander_level: 160, icon_id: "1" },
-    { member_id: "m2", nickname: "테스트B", synchro_level: 415, commander_level: 158, icon_id: "2" }
-  ],
-  meta: { guildId: "g1", areaId: "a1" }
-});</code></pre>
-          </details>
+          <p class="status">📨 데이터 미수신 — <strong>🎯 신규 회차 데이터 가져오기</strong> 클릭 후 blablalink 새 탭에서 자동 수집 대기</p>
         `
       : payload.type === "nikke-raid-data"
-        ? `
-            <p class="status status--ok">📨 payload 수신: <strong>${escapeHtml(payload.raidNum ?? "(회차 메타 미캡처)")}${payload.raidNum ? "차" : ""}</strong> · members ${payload.members.length}명 · raid ${payload.raid.length}행</p>
-            <button type="button" id="run-matching-btn" ${canMatch ? "" : "disabled"}>매칭 실행</button>
-          `
-        : `<p class="status">📨 payload type=${escapeHtml(payload.type)} — 매칭 불가</p>`
+        ? lastChangesPreview === null
+          ? `<p class="status">📨 데이터 수신 — 변경사항 계산 중...</p>`
+          : ""
+        : `<p class="status">📨 payload type=${escapeHtml(payload.type)} — 처리 불가</p>`
     : "";
 
-  // backfill 모드에서는 unmatched 시트 닉네임이 leaving 후보,
-  // unmatched payload member 가 joining 후보 (member_id 매칭 자체가 backfill 후라).
-  // 표시는 매칭 후 실제 의미 기준으로.
-  const isBackfill = classification?.mode === "backfill";
-  const effectiveLeaving =
-    classification === null
-      ? 0
-      : classification.classification.leaving.length +
-        (isBackfill ? classification.unmatchedSheetNicknames.length : 0);
-  const effectiveJoining =
-    classification === null ? 0 : classification.classification.joining.length;
-  const classificationBlock =
-    classification !== null
+  const preview = lastChangesPreview;
+  const previewBlock =
+    preview !== null
       ? `
-          <p class="status">🔀 분류 결과 (mode: <code>${escapeHtml(classification.mode)}</code>) — staying ${classification.classification.staying.length}명 · leaving ${effectiveLeaving}명 · joining ${effectiveJoining}명${
-            classification.nicknameChanges.length > 0
-              ? ` · 닉네임 변경 ${classification.nicknameChanges.length}건`
-              : ""
-          }</p>
-          ${
-            classification.alerts.length > 0
-              ? `<ul class="alerts">${classification.alerts.map((a) => `<li>${escapeHtml(a)}</li>`).join("")}</ul>`
-              : ""
-          }
-          ${
-            !classification.isComplete &&
-            (classification.unmatchedSheetNicknames.length > 0 ||
-              classification.unmatchedPayloadMembers.length > 0)
-              ? `<p class="meta">↑ 시트 정정이 필요해. <strong>자동 처리</strong> 시 탈퇴자 row 아래 데이터를 한 칸씩 위로 shift (Col A 가입순서 1..32 보존) → 빈 슬롯에 신규 가입자 입력 → 정원 32명 검증.</p>
-                 <button type="button" id="auto-sync-btn">🔄 탈퇴/신규 자동 처리 (leaving ${classification.unmatchedSheetNicknames.length} + joining ${classification.unmatchedPayloadMembers.length})</button>`
-              : ""
-          }
-          ${
-            lastAutoSync !== null
-              ? `<p class="status status--ok">✅ auto-sync 완료 — leaving ${lastAutoSync.removedRows.length}건 shift + joining ${lastAutoSync.addedRows.length}건 입력 · 빈 슬롯 ${lastAutoSync.emptySlotsBefore} → ${lastAutoSync.emptySlotsAfter}</p>`
-              : ""
-          }
-          ${
-            classification.isComplete && lastBatchPlan === null
-              ? `<button type="button" id="prepare-dryrun-btn">🧪 dry-run 계산</button>`
-              : ""
-          }
-        `
-      : "";
-
-  const dryRunBlock =
-    lastBatchPlan !== null
-      ? `
-          <h3>🧪 dry-run 미리보기</h3>
-          <p class="status">
-            회차 <strong>${escapeHtml(lastBatchPlan.raidNum)}차</strong> ·
-            백업 탭 <code>${escapeHtml(lastBatchPlan.backupTabName)}</code> ·
-            회차 컬럼 <code>${escapeHtml(lastBatchPlan.syncroColumn)}</code>
-          </p>
-          <p class="meta">
-            레이드 통계 신규 행 ${lastBatchPlan.raidStatsRows.length} ·
-            멤버 syncro PUT ${lastBatchPlan.memberSyncroUpdates.length}건 ·
-            range <code>${escapeHtml(lastBatchPlan.raidStatsRange === "" ? "(레이드 통계 skip)" : lastBatchPlan.raidStatsRange)}</code>
-          </p>
-          ${
-            lastBatchPlan.unmatchedNames.length > 0
-              ? `<p class="status status--warn">⚠️ unmatched ${lastBatchPlan.unmatchedNames.length}건</p>`
-              : ""
-          }
+          <h3>📋 예상되는 변경사항</h3>
+          <ul class="changes">
+            <li><strong>회차</strong>: ${escapeHtml(preview.raidNum)}차</li>
+            <li><strong>레이드 통계 신규 행</strong>: ${preview.raidStatsRowsCount}행</li>
+            <li><strong>이번 회차 보스</strong> (${preview.bossNames.length}종): ${preview.bossNames.map((b) => escapeHtml(b)).join(" · ")}</li>
+            <li><strong>탈퇴 멤버</strong> (${preview.leavingNicknames.length}명)${preview.leavingNicknames.length > 0 ? `: ${preview.leavingNicknames.map((n) => escapeHtml(n)).join(", ")}` : ""}</li>
+            <li><strong>신규 가입 멤버</strong> (${preview.joiningNicknames.length}명)${preview.joiningNicknames.length > 0 ? `: ${preview.joiningNicknames.map((n) => escapeHtml(n)).join(", ")}` : ""}</li>
+          </ul>
           ${
             writeStatus === "idle"
-              ? `<button type="button" id="confirm-write-btn" ${lastBatchPlan.isConfirmable ? "" : "disabled"}>확인 후 시트에 기록 (실제 쓰기 · _backup_탭 자동 생성)</button>`
+              ? `<button type="button" id="apply-all-btn">✅ 모든 변경 적용 (유니온 멤버 · 레이드 통계 · 레이드 결과)</button>`
               : ""
           }
           ${
             writeStatus === "running"
-              ? `<p class="status">🔄 쓰기 진행: <code>${escapeHtml(JSON.stringify(writeStages))}</code></p>`
+              ? `<p class="status">🔄 적용 중: <code>${escapeHtml(JSON.stringify(writeStages))}</code></p>`
               : ""
           }
           ${
             writeStatus === "done" && writeResult !== null
-              ? `<p class="status status--ok">✅ 쓰기 완료 · backup 탭 <code>${escapeHtml(writeResult.backupTabName)}</code></p>`
+              ? `<p class="status status--ok">✅ 모든 변경 완료 · backup 탭 <code>${escapeHtml(writeResult.backupTabName)}</code></p>
+                 ${
+                   nonParticipatingNicknames !== null
+                     ? nonParticipatingNicknames.length > 0
+                       ? `<p class="status status--warn">⚠️ 이번 레이드 미참여 멤버 (${nonParticipatingNicknames.length}명): ${nonParticipatingNicknames.map((n) => escapeHtml(n)).join(", ")}</p>`
+                       : `<p class="status status--ok">🎉 모든 멤버 참여 완료 — 미참여자 0명</p>`
+                     : ""
+                 }`
               : ""
           }
           ${
             writeStatus === "error"
-              ? `<p class="status status--error">⚠️ 쓰기 실패: ${escapeHtml(lastError ?? "")}</p>`
+              ? `<p class="status status--error">⚠️ 적용 실패: ${escapeHtml(lastError ?? "")}</p>`
               : ""
           }
         `
       : "";
+
+  // Legacy 변수 — UI 블록은 사용 안 하지만 DevTools 호출용 함수 보존을 위해 변수 유지
+  const classification = authed ? getSyncClassification() : null;
+  void classification;
+  void lastAutoSync;
+  void lastBatchPlan;
+  void writeResult;
 
   const errorBlock =
     lastError !== null
@@ -795,12 +939,10 @@ function renderApp(): void {
       ${diagBlock !== "" ? `<section class="diagnostic">${diagBlock}</section>` : ""}
       ${fetchTriggerBlock !== "" ? `<section class="fetch-trigger">${fetchTriggerBlock}</section>` : ""}
       ${payloadBlock !== "" ? `<section class="payload">${payloadBlock}</section>` : ""}
-      ${classificationBlock !== "" ? `<section class="classification">${classificationBlock}</section>` : ""}
-      ${dryRunBlock !== "" ? `<section class="dryrun">${dryRunBlock}</section>` : ""}
+      ${previewBlock !== "" ? `<section class="preview">${previewBlock}</section>` : ""}
       ${errorBlock}
       <section class="hint">
         <p>이 도구는 <code>blablalink.com</code> 새 탭에서 postMessage를 수신해 사본 시트를 자동으로 갱신합니다.</p>
-        <p><em>dry-run · 쓰기는 F-NRA-002-06/07 wiring 이후 추가됩니다.</em></p>
       </section>
     </main>
   `;
@@ -846,6 +988,9 @@ function renderApp(): void {
   document
     .getElementById("auto-sync-btn")
     ?.addEventListener("click", () => void autoSyncMembers());
+  document
+    .getElementById("apply-all-btn")
+    ?.addEventListener("click", () => void applyAllChanges());
 
   clearCountdown();
   if (authed && expiresAt !== null) {
@@ -874,7 +1019,16 @@ function bootstrap(): void {
       renderApp();
     }
   });
-  window.addEventListener("payloadReceived", () => renderApp());
+  window.addEventListener("payloadReceived", () => {
+    // 2-button 흐름 — payload 수신 후 자동 매칭 + 변경사항 계산
+    lastChangesPreview = null;
+    nonParticipatingNicknames = null;
+    lastBatchPlan = null;
+    lastAutoSync = null;
+    writeStatus = "idle";
+    renderApp();
+    void previewChanges();
+  });
   window.addEventListener("payloadValidationFailed", () => {
     lastError = "payload 검증 실패 — type/필수 필드 확인";
     renderApp();

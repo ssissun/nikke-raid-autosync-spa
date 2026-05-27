@@ -1,9 +1,25 @@
-// GIS (Google Identity Services) tokenClient — drive.file scope 단일
-// scope 변경 시 OAuth verification 정책 영향 — drive.file는 non-sensitive로 면제.
+// GIS (Google Identity Services) tokenClient — drive.file + userinfo.email scope.
+// 둘 다 non-sensitive — OAuth verification 면제.
 
 import { clearAuthState, setAuthState } from "./state";
 
-const DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+const SCOPES = [
+  "https://www.googleapis.com/auth/drive.file",
+  "https://www.googleapis.com/auth/userinfo.email",
+].join(" ");
+
+async function fetchUserEmail(accessToken: string): Promise<string | null> {
+  try {
+    const res = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { email?: string };
+    return typeof data.email === "string" ? data.email : null;
+  } catch {
+    return null;
+  }
+}
 
 declare global {
   interface Window {
@@ -61,13 +77,14 @@ export function initGIS(clientId: string): void {
 
   tokenClient = window.google!.accounts.oauth2.initTokenClient({
     client_id: clientId,
-    scope: DRIVE_FILE_SCOPE,
+    scope: SCOPES,
     callback: (resp) => {
       if (resp.error !== undefined || resp.access_token === undefined) {
         clearAuthState("error");
         return;
       }
       const expiresAt = Date.now() + resp.expires_in * 1000;
+      // 우선 token 만 저장 (UI 즉시 응답) → userinfo 비동기 fetch 후 email 갱신
       setAuthState(
         {
           isAuthenticated: true,
@@ -77,6 +94,19 @@ export function initGIS(clientId: string): void {
         },
         "login"
       );
+      void fetchUserEmail(resp.access_token).then((email) => {
+        if (email !== null) {
+          setAuthState(
+            {
+              isAuthenticated: true,
+              accessToken: resp.access_token,
+              expiresAt,
+              email,
+            },
+            "login"
+          );
+        }
+      });
     },
     error_callback: (err) => {
       console.warn("[NRA-SPA] GIS error_callback", err);
