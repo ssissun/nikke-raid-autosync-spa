@@ -21,6 +21,7 @@ import {
   type BatchUpdatePlan,
 } from "./dryrun";
 import { ensureRaidColumn, guessNextRaidNum, writeRaidData } from "./sheets";
+import { applyMemberSync, type AutoSyncResult } from "./sync/auto-sync";
 import type { NikkeRaidPayload } from "./types";
 
 const APP_VERSION = "0.1.0";
@@ -46,6 +47,7 @@ declare global {
     prepareDryRunFlow?: () => Promise<void>;
     confirmWriteFlow?: () => Promise<void>;
     getBatchPlan?: () => BatchUpdatePlan | null;
+    autoSyncMembers?: () => Promise<void>;
   }
 }
 
@@ -418,6 +420,61 @@ async function confirmWriteFlow(): Promise<void> {
   renderApp();
 }
 
+let lastAutoSync: AutoSyncResult | null = null;
+
+/**
+ * SHEET_SCHEMA §2.2 4·5번 자동 sync — leaving 삭제 + Col A 재번호 + joining 추가.
+ * 호출 후 자동 재진단 + 재매칭으로 시트 ↔ payload 100% 일치 상태 만든다.
+ */
+async function autoSyncMembers(): Promise<void> {
+  const token = getAccessToken();
+  const sheetId = getSheetId();
+  const payload = getLastPayload();
+  const classResult = getSyncClassification();
+  if (
+    token === null ||
+    sheetId === null ||
+    payload === null ||
+    payload.type !== "nikke-raid-data" ||
+    classResult === null
+  ) {
+    lastError = "auto-sync 조건 미충족 (로그인/시트/payload/매칭 결과 필요)";
+    renderApp();
+    return;
+  }
+  if (
+    classResult.unmatchedSheetNicknames.length === 0 &&
+    classResult.unmatchedPayloadMembers.length === 0
+  ) {
+    lastError = "auto-sync 대상 없음 (unmatched 0건)";
+    renderApp();
+    return;
+  }
+
+  try {
+    lastError = null;
+    const layout =
+      lastDiagnostic?.guessedFormat === "pre-migration"
+        ? "pre-migration"
+        : "post-migration";
+    lastAutoSync = await applyMemberSync(
+      sheetId,
+      token,
+      classResult.unmatchedSheetNicknames,
+      classResult.unmatchedPayloadMembers,
+      { layout }
+    );
+    console.info("[NRA-SPA] auto-sync 완료", lastAutoSync);
+    // 시트 변경 후 재진단 + 재매칭
+    await autoDiagnose();
+    await runMatching();
+  } catch (e) {
+    lastError = e instanceof Error ? e.message : String(e);
+    console.error("[NRA-SPA] auto-sync error", e);
+    renderApp();
+  }
+}
+
 async function runMatching(): Promise<void> {
   const token = getAccessToken();
   const sheetId = getSheetId();
@@ -621,6 +678,19 @@ function renderApp(): void {
               : ""
           }
           ${
+            !classification.isComplete &&
+            (classification.unmatchedSheetNicknames.length > 0 ||
+              classification.unmatchedPayloadMembers.length > 0)
+              ? `<p class="meta">↑ 시트 정정이 필요해. <strong>자동 처리</strong> 시 시트에서 매칭 실패 닉네임 row가 삭제되고(가입 순서 재번호) payload 신규 닉네임이 마지막 행 다음에 추가돼.</p>
+                 <button type="button" id="auto-sync-btn">🔄 탈퇴/신규 자동 처리 (leaving ${classification.unmatchedSheetNicknames.length} + joining ${classification.unmatchedPayloadMembers.length})</button>`
+              : ""
+          }
+          ${
+            lastAutoSync !== null
+              ? `<p class="status status--ok">✅ auto-sync 완료 — 삭제 ${lastAutoSync.removedRows.length}행 / 추가 ${lastAutoSync.addedRows.length}행</p>`
+              : ""
+          }
+          ${
             classification.isComplete && lastBatchPlan === null
               ? `<button type="button" id="prepare-dryrun-btn">🧪 dry-run 계산</button>`
               : ""
@@ -734,6 +804,9 @@ function renderApp(): void {
   document
     .getElementById("fetch-raid-btn")
     ?.addEventListener("click", () => openBlablalinkRaidPage());
+  document
+    .getElementById("auto-sync-btn")
+    ?.addEventListener("click", () => void autoSyncMembers());
 
   clearCountdown();
   if (authed && expiresAt !== null) {
@@ -800,6 +873,7 @@ function bootstrap(): void {
   window.prepareDryRunFlow = prepareDryRunFlow;
   window.confirmWriteFlow = confirmWriteFlow;
   window.getBatchPlan = () => lastBatchPlan;
+  window.autoSyncMembers = autoSyncMembers;
 
   window.addEventListener("sheetsWriteProgress", (e) => {
     const detail = (e as CustomEvent).detail as { stage: string; status: string };
