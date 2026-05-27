@@ -21,52 +21,75 @@ export class SyncError extends Error {
   }
 }
 
+export interface UnmatchedSheetNickname {
+  nickname: string;
+  sheetRow: number;
+}
+
 export interface ClassificationResult {
   classification: SyncClassification;
   mode: MigrationMode;
   nicknameChanges: NicknameChange[];
   alerts: string[]; // A-2 매칭 실패 안내
   isComplete: boolean;
+  /** backfill 모드에서 시트 닉네임 매칭 실패 목록 (탈퇴 후보) */
+  unmatchedSheetNicknames: UnmatchedSheetNickname[];
+  /** backfill 모드에서 payload 닉네임 매칭 실패 목록 (신규 가입 후보) */
+  unmatchedPayloadMembers: GuildMember[];
 }
 
 let lastResult: ClassificationResult | null = null;
+
+interface BackfillResult {
+  alerts: string[];
+  unmatchedSheetNicknames: UnmatchedSheetNickname[];
+  unmatchedPayloadMembers: GuildMember[];
+}
 
 function backfillColBMapFromNicknames(
   colBMap: Map<string, number>,
   colCNicknames: Map<number, string>,
   payloadMembers: readonly GuildMember[]
-): string[] {
+): BackfillResult {
   // sheetRow → nickname 역인덱스 (nickname → sheetRow)
   const nicknameToRow = new Map<string, number>();
   for (const [sheetRow, nickname] of colCNicknames.entries()) {
     nicknameToRow.set(nickname, sheetRow);
   }
 
-  const unmatchedSheetNicknames = new Set(nicknameToRow.keys());
-  const unmatchedPayloadNicknames: string[] = [];
+  const unmatchedSheetNames = new Set(nicknameToRow.keys());
+  const unmatchedPayloadMembers: GuildMember[] = [];
 
   for (const member of payloadMembers) {
     const sheetRow = nicknameToRow.get(member.nickname);
     if (sheetRow !== undefined) {
       colBMap.set(member.member_id, sheetRow);
-      unmatchedSheetNicknames.delete(member.nickname);
+      unmatchedSheetNames.delete(member.nickname);
     } else {
-      unmatchedPayloadNicknames.push(member.nickname);
+      unmatchedPayloadMembers.push(member);
+    }
+  }
+
+  const unmatchedSheetNicknames: UnmatchedSheetNickname[] = [];
+  for (const nickname of unmatchedSheetNames) {
+    const sheetRow = nicknameToRow.get(nickname);
+    if (sheetRow !== undefined) {
+      unmatchedSheetNicknames.push({ nickname, sheetRow });
     }
   }
 
   const alerts: string[] = [];
-  if (unmatchedSheetNicknames.size > 0) {
+  if (unmatchedSheetNicknames.length > 0) {
     alerts.push(
-      `시트 닉네임 매칭 실패 ${unmatchedSheetNicknames.size}명: ${[...unmatchedSheetNicknames].join(", ")}`
+      `시트 닉네임 매칭 실패 ${unmatchedSheetNicknames.length}명: ${unmatchedSheetNicknames.map((u) => u.nickname).join(", ")}`
     );
   }
-  if (unmatchedPayloadNicknames.length > 0) {
+  if (unmatchedPayloadMembers.length > 0) {
     alerts.push(
-      `payload 닉네임 매칭 실패 ${unmatchedPayloadNicknames.length}명: ${unmatchedPayloadNicknames.join(", ")}`
+      `payload 닉네임 매칭 실패 ${unmatchedPayloadMembers.length}명: ${unmatchedPayloadMembers.map((m) => m.nickname).join(", ")}`
     );
   }
-  return alerts;
+  return { alerts, unmatchedSheetNicknames, unmatchedPayloadMembers };
 }
 
 export async function startClassificationFlow(
@@ -85,13 +108,17 @@ export async function startClassificationFlow(
   }
 
   const alerts: string[] = [];
+  let unmatchedSheetNicknames: UnmatchedSheetNickname[] = [];
+  let unmatchedPayloadMembers: GuildMember[] = [];
   if (mode === "backfill") {
-    const backfillAlerts = backfillColBMapFromNicknames(
+    const backfillResult = backfillColBMapFromNicknames(
       sheetRead.colBMap,
       sheetRead.colCNicknames,
       payloadMembers
     );
-    alerts.push(...backfillAlerts);
+    alerts.push(...backfillResult.alerts);
+    unmatchedSheetNicknames = backfillResult.unmatchedSheetNicknames;
+    unmatchedPayloadMembers = backfillResult.unmatchedPayloadMembers;
   }
 
   const classification = buildSyncClassification(
@@ -100,7 +127,12 @@ export async function startClassificationFlow(
     payloadMembers
   );
   const nicknameChanges = detectNicknameChanges(classification);
-  const isComplete = isSyncClassificationComplete(classification);
+  const baseComplete = isSyncClassificationComplete(classification);
+  // backfill 모드에서 unmatched 가 있으면 isComplete=false (auto-sync 필요)
+  const isComplete =
+    baseComplete &&
+    unmatchedSheetNicknames.length === 0 &&
+    unmatchedPayloadMembers.length === 0;
 
   const result: ClassificationResult = {
     classification,
@@ -108,6 +140,8 @@ export async function startClassificationFlow(
     nicknameChanges,
     alerts,
     isComplete,
+    unmatchedSheetNicknames,
+    unmatchedPayloadMembers,
   };
   lastResult = result;
   return result;
