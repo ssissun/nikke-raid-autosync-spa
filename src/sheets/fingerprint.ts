@@ -16,7 +16,13 @@ const RAID_COLUMN_PATTERN = /^(?:\d+|OO)차$/;
 const RAID_COLUMN_PLACEHOLDER = "OO차";
 
 // 실측 시트 fingerprint 등록 후 채움. 빈 배열이면 항상 MISMATCH.
-export const ALLOWED_FINGERPRINTS: readonly string[] = [];
+//
+// 등록 이력:
+//   2026-05-27 — ssissun 본인 사본 + 베타 사본(아이보 추정) 교차 측정 동일 hash 확인.
+//   oddoido 마스터 v1.12 (가입 순서/닉네임/OO차 + 회차 16컬럼) 구조 표준.
+export const ALLOWED_FINGERPRINTS: readonly string[] = [
+  "14c9b03b53810c97c1866dd30f29b812930b2aa0ab820c8a7c9b78c4638e8ad9",
+];
 
 interface BatchGetResponse {
   spreadsheetId: string;
