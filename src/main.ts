@@ -252,7 +252,36 @@ async function diagnoseSheet(): Promise<SheetDiagnostic | null> {
 
 async function autoDiagnose(): Promise<void> {
   await diagnoseSheet();
+  await checkFingerprintTrust();
   renderApp();
+}
+
+/**
+ * 시트 fingerprint 검증 — 진단 / 시트 선택 / 재진단 시점에 즉시 차단 알림.
+ * Hybrid: BUILT_IN + USER_REGISTERED 매칭. 미일치 시 pendingTrust 설정.
+ */
+async function checkFingerprintTrust(): Promise<void> {
+  const token = getAccessToken();
+  const sheetId = getSheetId();
+  if (token === null || sheetId === null) {
+    pendingTrust = null;
+    return;
+  }
+  try {
+    const fingerprint = await computeFingerprint(sheetId, token);
+    const allowed = [...ALLOWED_FINGERPRINTS, ...getUserFingerprints()];
+    if (allowed.includes(fingerprint)) {
+      pendingTrust = null;
+    } else {
+      // pendingTrust 이미 같은 hash 면 체크 상태 보존
+      if (pendingTrust === null || pendingTrust.hash !== fingerprint) {
+        pendingTrust = { hash: fingerprint, checkedItems: new Set() };
+      }
+    }
+  } catch (e) {
+    console.warn("[NRA-SPA] fingerprint check 실패 (진단 단계, 쓰기 단계 재검증):", e);
+    pendingTrust = null;
+  }
 }
 
 // Dev helper — payload의 닉네임을 시트 Col B(마이그레이션 전) 또는 Col C(마이그레이션 후)에 자동 입력.
@@ -911,6 +940,11 @@ function renderApp(): void {
                     diag.guessedFormat === "post-migration"
                       ? `<p class="status status--ok">✅ 마이그레이션 후 구조 — 정상</p>`
                       : ""
+                  }
+                  ${
+                    pendingTrust !== null
+                      ? `<p class="status status--error">⛔ 시트 구조 fingerprint 미등록 — 아래 신뢰 다이얼로그에서 검토 후 진행 가능</p>`
+                      : `<p class="status status--ok">🔐 시트 구조 fingerprint 검증 통과</p>`
                   }
                 `
           }
