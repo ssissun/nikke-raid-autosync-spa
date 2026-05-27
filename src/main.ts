@@ -953,12 +953,14 @@ function renderApp(): void {
         ? `<p class="status">🔍 시트 진단 중...</p>`
         : "";
 
+  // hash 미일치 시 이후 버튼 모두 비활성화 — 사용자가 신뢰 다이얼로그 통과 후에만 진행 가능
+  const trustGate = pendingTrust !== null;
   const fetchTriggerBlock =
     authed && sheetId !== null
       ? `
           <h3>🎯 회차 데이터 수집</h3>
           <p class="meta">Tampermonkey + Greasyfork 유저스크립트 <code>579278</code> 설치 필요. 클릭 시 blablalink.com 새 탭이 열리고 자동으로 4 API를 intercept하여 본 페이지로 postMessage 송신.</p>
-          <button type="button" id="fetch-raid-btn">🎯 신규 회차 데이터 가져오기 (blablalink 새 탭)</button>
+          <button type="button" id="fetch-raid-btn" ${trustGate ? "disabled" : ""}>🎯 신규 회차 데이터 가져오기 (blablalink 새 탭)</button>
         `
       : "";
 
@@ -991,7 +993,7 @@ function renderApp(): void {
           </ul>
           ${
             writeStatus === "idle"
-              ? `<button type="button" id="apply-all-btn">✅ 모든 변경 적용 (유니온 멤버 · 레이드 통계 · 레이드 결과)</button>`
+              ? `<button type="button" id="apply-all-btn" ${trustGate ? "disabled" : ""}>✅ 모든 변경 적용 (유니온 멤버 · 레이드 통계 · 레이드 결과)</button>`
               : ""
           }
           ${
@@ -1057,7 +1059,7 @@ function renderApp(): void {
             ).join("")}
           </ul>
           <button type="button" id="trust-confirm-btn" ${allChecked ? "" : "disabled"}>✅ 이 시트를 신뢰하고 진행 (${pendingTrust.checkedItems.size}/${TRUST_CHECKLIST.length})</button>
-          <button type="button" id="trust-cancel-btn">취소</button>
+          <p class="meta">신뢰하지 않으려면 상단 <strong>[변경]</strong> 버튼으로 다른 시트를 선택해주세요.</p>
         `
       : "";
 
@@ -1082,10 +1084,10 @@ function renderApp(): void {
       <section class="auth">${authBlock}</section>
       ${sheetBlock !== "" ? `<section class="sheet">${sheetBlock}</section>` : ""}
       ${diagBlock !== "" ? `<section class="diagnostic">${diagBlock}</section>` : ""}
+      ${trustBlock !== "" ? `<section class="trust">${trustBlock}</section>` : ""}
       ${fetchTriggerBlock !== "" ? `<section class="fetch-trigger">${fetchTriggerBlock}</section>` : ""}
       ${payloadBlock !== "" ? `<section class="payload">${payloadBlock}</section>` : ""}
       ${previewBlock !== "" ? `<section class="preview">${previewBlock}</section>` : ""}
-      ${trustBlock !== "" ? `<section class="trust">${trustBlock}</section>` : ""}
       ${errorBlock}
       <section class="hint">
         <p>이 도구는 <code>blablalink.com</code> 새 탭에서 postMessage를 수신해 사본 시트를 자동으로 갱신합니다.</p>
@@ -1170,13 +1172,6 @@ function renderApp(): void {
       void applyAllChanges();
     });
 
-  document
-    .getElementById("trust-cancel-btn")
-    ?.addEventListener("click", () => {
-      pendingTrust = null;
-      lastError = "시트 신뢰 취소됨 — 다른 시트 선택 또는 시트 구조 확인 후 재시도";
-      renderApp();
-    });
 
   clearCountdown();
   if (authed && expiresAt !== null) {
