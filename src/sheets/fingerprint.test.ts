@@ -50,6 +50,72 @@ describe("computeFingerprint (option B)", () => {
     expect(fpWith).toBe(fpWithout);
   });
 
+  it("회차 컬럼 normalize — 35차 vs 36차 → 동일 hash", async () => {
+    const v35 = mockBatchGetResponse(
+      ["가입 순서", "닉네임", "35차"],
+      ["회차", "닉네임"]
+    );
+    const v36 = mockBatchGetResponse(
+      ["가입 순서", "닉네임", "36차"],
+      ["회차", "닉네임"]
+    );
+    const fp35 = await computeFingerprint(
+      "sid",
+      "tok",
+      vi.fn().mockResolvedValue(v35) as unknown as typeof fetch
+    );
+    const fp36 = await computeFingerprint(
+      "sid",
+      "tok",
+      vi.fn().mockResolvedValue(v36) as unknown as typeof fetch
+    );
+    expect(fp35).toBe(fp36);
+  });
+
+  it("회차 컬럼 normalize — 다중 회차(35~39) → 단일 OO차 → OO차 1개와 동일 hash", async () => {
+    const multiRaid = mockBatchGetResponse(
+      ["가입 순서", "닉네임", "35차", "36차", "37차", "38차", "39차"],
+      ["회차", "닉네임"]
+    );
+    const placeholderOnly = mockBatchGetResponse(
+      ["가입 순서", "닉네임", "OO차"],
+      ["회차", "닉네임"]
+    );
+    const fpMulti = await computeFingerprint(
+      "sid",
+      "tok",
+      vi.fn().mockResolvedValue(multiRaid) as unknown as typeof fetch
+    );
+    const fpPlaceholder = await computeFingerprint(
+      "sid",
+      "tok",
+      vi.fn().mockResolvedValue(placeholderOnly) as unknown as typeof fetch
+    );
+    expect(fpMulti).toBe(fpPlaceholder);
+  });
+
+  it("비회차 컬럼 변경 → hash 다름 (예: 닉네임 → Nick)", async () => {
+    const v1 = mockBatchGetResponse(
+      ["가입 순서", "닉네임", "OO차"],
+      ["회차", "닉네임"]
+    );
+    const v2 = mockBatchGetResponse(
+      ["가입 순서", "Nick", "OO차"],
+      ["회차", "닉네임"]
+    );
+    const fp1 = await computeFingerprint(
+      "sid",
+      "tok",
+      vi.fn().mockResolvedValue(v1) as unknown as typeof fetch
+    );
+    const fp2 = await computeFingerprint(
+      "sid",
+      "tok",
+      vi.fn().mockResolvedValue(v2) as unknown as typeof fetch
+    );
+    expect(fp1).not.toBe(fp2);
+  });
+
   it("헤더 행 비어있음 → FINGERPRINT_READ_FAILED", async () => {
     const fetchMock = vi
       .fn()

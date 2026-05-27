@@ -22,6 +22,7 @@ import {
 } from "./dryrun";
 import {
   appendRaidResultRow,
+  computeFingerprint,
   ensureRaidColumn,
   guessNextRaidNum,
   writeRaidData,
@@ -53,6 +54,7 @@ declare global {
     confirmWriteFlow?: () => Promise<void>;
     getBatchPlan?: () => BatchUpdatePlan | null;
     autoSyncMembers?: () => Promise<void>;
+    computeFingerprintHelper?: () => Promise<string | null>;
   }
 }
 
@@ -432,7 +434,7 @@ async function confirmWriteFlow(): Promise<void> {
 
   try {
     const result = await writeRaidData(sheetId, lastBatchPlan, token, {
-      skipFingerprint: true, // ALLOWED_FINGERPRINTS 미실측 — dev 모드 임시 우회
+      skipFingerprint: false, // F-NRA-004-01 활성화 — 시트 구조 검증 강제
     });
     // `레이드 결과` 탭에도 새 회차 row 추가 (회차 컬럼만, 다른 컬럼 사용자 입력 대기)
     try {
@@ -1067,6 +1069,17 @@ function bootstrap(): void {
   window.confirmWriteFlow = confirmWriteFlow;
   window.getBatchPlan = () => lastBatchPlan;
   window.autoSyncMembers = autoSyncMembers;
+  window.computeFingerprintHelper = async () => {
+    const token = getAccessToken();
+    const sheetId = getSheetId();
+    if (token === null || sheetId === null) {
+      console.warn("[NRA-SPA] computeFingerprint: 로그인/시트 필요");
+      return null;
+    }
+    const hash = await computeFingerprint(sheetId, token);
+    console.info(`[NRA-SPA] 시트 fingerprint: ${hash}`);
+    return hash;
+  };
 
   window.addEventListener("sheetsWriteProgress", (e) => {
     const detail = (e as CustomEvent).detail as { stage: string; status: string };
