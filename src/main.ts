@@ -376,8 +376,16 @@ async function prepareDryRunFlow(): Promise<void> {
     const syncroColumn = resolution.column;
 
     const lastRaidRow = await getLastRaidRow(sheetId, token);
+    // raid Col A 가 비어있거나 잘못된 회차로 들어왔으면 raidNumStr 으로 통일.
+    // userscript 가 GetUnionRaidLevelInfo 미캡처 시 빈 또는 'null차' 가 들어올 수 있음.
+    const targetLabel = `${raidNumStr}차`;
+    const normalizedRaid = payload.raid.map((row) => {
+      const next = [...row] as typeof row;
+      next[0] = targetLabel;
+      return next;
+    });
     const plan = prepareDryRun({
-      payload: { ...payload, raidNum: raidNumStr },
+      payload: { ...payload, raidNum: raidNumStr, raid: normalizedRaid },
       classification: classResult.classification,
       alerts: classResult.alerts,
       lastRaidRow,
@@ -664,10 +672,21 @@ function renderApp(): void {
         : `<p class="status">📨 payload type=${escapeHtml(payload.type)} — 매칭 불가</p>`
     : "";
 
+  // backfill 모드에서는 unmatched 시트 닉네임이 leaving 후보,
+  // unmatched payload member 가 joining 후보 (member_id 매칭 자체가 backfill 후라).
+  // 표시는 매칭 후 실제 의미 기준으로.
+  const isBackfill = classification?.mode === "backfill";
+  const effectiveLeaving =
+    classification === null
+      ? 0
+      : classification.classification.leaving.length +
+        (isBackfill ? classification.unmatchedSheetNicknames.length : 0);
+  const effectiveJoining =
+    classification === null ? 0 : classification.classification.joining.length;
   const classificationBlock =
     classification !== null
       ? `
-          <p class="status">🔀 분류 결과 (mode: <code>${escapeHtml(classification.mode)}</code>) — staying ${classification.classification.staying.length}명 · leaving ${classification.classification.leaving.length}명 · joining ${classification.classification.joining.length}명${
+          <p class="status">🔀 분류 결과 (mode: <code>${escapeHtml(classification.mode)}</code>) — staying ${classification.classification.staying.length}명 · leaving ${effectiveLeaving}명 · joining ${effectiveJoining}명${
             classification.nicknameChanges.length > 0
               ? ` · 닉네임 변경 ${classification.nicknameChanges.length}건`
               : ""

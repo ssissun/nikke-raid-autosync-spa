@@ -92,6 +92,16 @@ describe("writeRaidData facade", () => {
         )
       ) // backup batchGet
       .mockResolvedValueOnce(new Response("{}", { status: 200 })) // backup writePUT
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sheets: [
+              { properties: { sheetId: 100, title: "_backup_5" } },
+            ],
+          }),
+          { status: 200 }
+        )
+      ) // pruneOldBackupTabs listSheets — 1개만, 정리 없음
       .mockResolvedValueOnce(gridSufficient()) // ensureSheetGrid(레이드 통계)
       .mockResolvedValueOnce(gridSufficient()) // ensureSheetGrid(유니온 멤버)
       .mockResolvedValueOnce(new Response("{}", { status: 200 })); // batchUpdate
