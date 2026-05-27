@@ -71,6 +71,82 @@ export async function findRaidColumn(
   return columnNumberToLetter(offset + idx);
 }
 
+/**
+ * columnLetter "A"→1, "Z"→26, "AA"→27, "AZ"→52 변환 (역연산).
+ */
+function columnLetterToNumber(letter: string): number {
+  let n = 0;
+  for (const ch of letter.toUpperCase()) {
+    const code = ch.charCodeAt(0);
+    if (code < 65 || code > 90) return 0;
+    n = n * 26 + (code - 64);
+  }
+  return n;
+}
+
+interface SheetProperties {
+  sheetId: number;
+  title?: string;
+  gridProperties?: { rowCount?: number; columnCount?: number };
+}
+
+interface SpreadsheetGetResponse {
+  sheets?: Array<{ properties?: SheetProperties }>;
+}
+
+/**
+ * `유니온 멤버` 탭의 grid columnCount 가 needed 미만이면 appendDimension 으로 확장.
+ * Sheets API 가 grid 밖 셀 쓰기 시 400 반환하므로 사전 확장 필수.
+ */
+async function ensureMemberGridColumns(
+  spreadsheetId: string,
+  requiredCols: number,
+  accessToken: string,
+  fetchImpl: typeof fetch
+): Promise<void> {
+  const infoUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets(properties(sheetId,title,gridProperties))`;
+  const infoRes = await fetchImpl(infoUrl, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!infoRes.ok) {
+    throw new Error(`GRID_INFO_FAILED: HTTP ${infoRes.status}`);
+  }
+  const body = (await infoRes.json()) as SpreadsheetGetResponse;
+  const found = (body.sheets ?? []).find(
+    (s) => s.properties?.title === "유니온 멤버"
+  );
+  if (found === undefined || found.properties === undefined) {
+    throw new Error("GRID_INFO_FAILED: '유니온 멤버' 탭 부재");
+  }
+  const currentCols = found.properties.gridProperties?.columnCount ?? 0;
+  if (currentCols >= requiredCols) return;
+
+  const additional = requiredCols - currentCols;
+  const buUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`;
+  const buRes = await fetchImpl(buUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      requests: [
+        {
+          appendDimension: {
+            sheetId: found.properties.sheetId,
+            dimension: "COLUMNS",
+            length: additional,
+          },
+        },
+      ],
+    }),
+  });
+  if (!buRes.ok) {
+    const errText = await buRes.text().catch(() => "");
+    throw new Error(`GRID_EXPAND_FAILED: HTTP ${buRes.status} ${errText.slice(0, 120)}`);
+  }
+}
+
 async function writeColumnHeader(
   spreadsheetId: string,
   column: string,
@@ -78,6 +154,16 @@ async function writeColumnHeader(
   accessToken: string,
   fetchImpl: typeof fetch
 ): Promise<void> {
+  // grid 한계 초과 방지 — 먼저 columnCount 확장
+  const requiredCols = columnLetterToNumber(column);
+  if (requiredCols > 0) {
+    await ensureMemberGridColumns(
+      spreadsheetId,
+      requiredCols,
+      accessToken,
+      fetchImpl
+    );
+  }
   const range = `유니온 멤버!${column}1`;
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
   const res = await fetchImpl(url, {
@@ -93,6 +179,8 @@ async function writeColumnHeader(
     throw new Error(`COLUMN_HEADER_WRITE_FAILED: HTTP ${res.status} ${errText.slice(0, 120)}`);
   }
 }
+
+export { columnLetterToNumber };
 
 /**
  * SHEET_SCHEMA §2.2 3단계 분기 완전 구현.
