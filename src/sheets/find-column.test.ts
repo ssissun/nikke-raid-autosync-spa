@@ -139,13 +139,15 @@ describe("ensureRaidColumn (SHEET_SCHEMA §2.2 3단계 분기)", () => {
     expect(fetchMock.mock.calls[2][1]?.method).toBe("PUT");
   });
 
-  it("3) 둘 다 부재 → grid 확장 + 마지막 +1 신규 헤더", async () => {
+  it("3) 둘 다 부재 → grid 확장 + 마지막 +1 신규 헤더 + 스타일 복사", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(mockRow(["35차", "36차", "37차", "38차", "39차"]))
       .mockResolvedValueOnce(gridInfoResponse(7)) // 부족 → expand 필요
       .mockResolvedValueOnce(okBatchUpdate()) // appendDimension
-      .mockResolvedValueOnce(okPut());
+      .mockResolvedValueOnce(okPut()) // writeColumnHeader
+      .mockResolvedValueOnce(gridInfoResponse(9)) // copyColumnFormat meta
+      .mockResolvedValueOnce(okBatchUpdate()); // copyPaste
     const r = await ensureRaidColumn(
       "sid",
       "40",
@@ -155,7 +157,7 @@ describe("ensureRaidColumn (SHEET_SCHEMA §2.2 3단계 분기)", () => {
     expect(r.column).toBe("I"); // D + idx 5 → D(4)+5 = 9 → I
     expect(r.isNew).toBe(true);
     expect(r.isPlaceholder).toBe(false);
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
     const putCall = fetchMock.mock.calls[3];
     expect(putCall[1]?.method).toBe("PUT");
     const body = JSON.parse(putCall[1].body as string);
@@ -165,9 +167,13 @@ describe("ensureRaidColumn (SHEET_SCHEMA §2.2 3단계 분기)", () => {
     const buBody = JSON.parse(buCall[1].body as string);
     expect(buBody.requests[0].appendDimension.dimension).toBe("COLUMNS");
     expect(buBody.requests[0].appendDimension.length).toBe(2); // 9 - 7 = 2
+    // copyPaste 검증
+    const cpCall = fetchMock.mock.calls[5];
+    const cpBody = JSON.parse(cpCall[1].body as string);
+    expect(cpBody.requests[0].copyPaste.pasteType).toBe("PASTE_FORMAT");
   });
 
-  it("3) pre-migration layout — Col C 기준, 빈 헤더 → 첫 컬럼", async () => {
+  it("3) pre-migration layout — Col C 기준, 빈 헤더 → 첫 컬럼 (스타일 복사 source 없음, 호출 skip)", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(mockRow([])) // 빈 헤더
@@ -182,15 +188,19 @@ describe("ensureRaidColumn (SHEET_SCHEMA §2.2 3단계 분기)", () => {
     );
     expect(r.column).toBe("C"); // C(3) + 0 = C
     expect(r.isNew).toBe(true);
+    // lastFilledIdx === -1 이면 copyColumnFormat 호출 안 함 → 3 fetch
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it("3) pre-migration 35-39차 + 신규 40차 → H 컬럼 (grid 7 → 8 확장)", async () => {
+  it("3) pre-migration 35-39차 + 신규 40차 → H 컬럼 (grid 7 → 8 확장 + 스타일 복사)", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(mockRow(["35차", "36차", "37차", "38차", "39차"]))
       .mockResolvedValueOnce(gridInfoResponse(7)) // 7컬럼 → H(8) 필요 → +1 expand
       .mockResolvedValueOnce(okBatchUpdate())
-      .mockResolvedValueOnce(okPut());
+      .mockResolvedValueOnce(okPut())
+      .mockResolvedValueOnce(gridInfoResponse(8)) // copyColumnFormat meta
+      .mockResolvedValueOnce(okBatchUpdate()); // copyPaste
     const r = await ensureRaidColumn(
       "sid",
       "40",

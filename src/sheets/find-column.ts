@@ -1,5 +1,96 @@
 import { ensureSheetGrid } from "./grid";
 
+interface SheetPropsForFormat {
+  sheetId: number;
+  rowCount?: number;
+}
+
+async function fetchMemberSheetMeta(
+  spreadsheetId: string,
+  accessToken: string,
+  fetchImpl: typeof fetch
+): Promise<SheetPropsForFormat> {
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets(properties(sheetId,title,gridProperties))`;
+  const res = await fetchImpl(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) {
+    throw new Error(`COPY_FORMAT_META_FAILED: HTTP ${res.status}`);
+  }
+  const body = (await res.json()) as {
+    sheets?: Array<{
+      properties?: {
+        sheetId?: number;
+        title?: string;
+        gridProperties?: { rowCount?: number };
+      };
+    }>;
+  };
+  const found = (body.sheets ?? []).find(
+    (s) => s.properties?.title === "유니온 멤버"
+  );
+  if (found === undefined || found.properties?.sheetId === undefined) {
+    throw new Error("COPY_FORMAT_META_FAILED: '유니온 멤버' 탭 부재");
+  }
+  return {
+    sheetId: found.properties.sheetId,
+    rowCount: found.properties.gridProperties?.rowCount,
+  };
+}
+
+/**
+ * source column 의 format 을 dest column 에 복사 (PASTE_FORMAT).
+ * 테두리·폰트·정렬 등 스타일 유지로 시각적 일관성 보장.
+ */
+async function copyColumnFormat(
+  spreadsheetId: string,
+  sourceColumn: string,
+  destColumn: string,
+  accessToken: string,
+  fetchImpl: typeof fetch
+): Promise<void> {
+  const meta = await fetchMemberSheetMeta(spreadsheetId, accessToken, fetchImpl);
+  const sourceIdx = columnLetterToNumber(sourceColumn) - 1;
+  const destIdx = columnLetterToNumber(destColumn) - 1;
+  if (sourceIdx < 0 || destIdx < 0) return;
+  const rowEnd = meta.rowCount ?? 33;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`;
+  const res = await fetchImpl(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      requests: [
+        {
+          copyPaste: {
+            source: {
+              sheetId: meta.sheetId,
+              startRowIndex: 0,
+              endRowIndex: rowEnd,
+              startColumnIndex: sourceIdx,
+              endColumnIndex: sourceIdx + 1,
+            },
+            destination: {
+              sheetId: meta.sheetId,
+              startRowIndex: 0,
+              endRowIndex: rowEnd,
+              startColumnIndex: destIdx,
+              endColumnIndex: destIdx + 1,
+            },
+            pasteType: "PASTE_FORMAT",
+          },
+        },
+      ],
+    }),
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`COPY_FORMAT_FAILED: HTTP ${res.status} ${errText.slice(0, 120)}`);
+  }
+}
+
 // F-NRA-002-07 회차 컬럼 자동 탐색 + 부재 시 신규 추가.
 // 마이그레이션 후: 회차 컬럼은 Col D부터 (A=가입순서, B=member_id, C=닉네임, D+=회차)
 // 마이그레이션 전: 회차 컬럼은 Col C부터 (A=가입순서, B=닉네임, C+=회차)
@@ -180,6 +271,22 @@ export async function ensureRaidColumn(
   const newIdx = lastFilledIdx + 1;
   const newCol = columnNumberToLetter(offset + newIdx);
   await writeColumnHeader(spreadsheetId, newCol, raidNum, accessToken, fetchImpl);
+  // 인접한 기존 회차 컬럼 (lastFilledIdx) 의 스타일을 새 컬럼에 복사 — 테두리·정렬 등 일관 유지.
+  if (lastFilledIdx >= 0) {
+    const sourceCol = columnNumberToLetter(offset + lastFilledIdx);
+    try {
+      await copyColumnFormat(
+        spreadsheetId,
+        sourceCol,
+        newCol,
+        accessToken,
+        fetchImpl
+      );
+    } catch (e) {
+      // 스타일 복사 실패는 치명적 아님 — 데이터는 정상 입력됨. warning 만.
+      console.warn("[NRA-SPA] copyColumnFormat 실패 (데이터는 정상):", e);
+    }
+  }
   return { column: newCol, isNew: true, isPlaceholder: false };
 }
 
