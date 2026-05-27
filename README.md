@@ -1,8 +1,8 @@
 # NIKKE 유레 자동 동기화 도구
 
-> **블블블링크 ShiftyPad → Google Sheets 자동 동기화 도구**
+> **블라블라링크 ShiftyPad → Google Sheets 자동 동기화 도구**
 >
-> NIKKE 유니온 레이드 회차 데이터(레이드 결과 + 멤버 싱크로 레벨)를 mango.hke의 [NIKKE 유레 시트](https://docs.google.com/spreadsheets/d/1aoyt9aOiCZsoQp7m_1QjGEh82r19fQGwGu4LLG9DDjg/) 사본에 자동 입력해주는 third-party 도구.
+> NIKKE 유니온 레이드 회차 데이터(레이드 결과 + 멤버 싱크로 레벨)를 NIKKE 유레 시트 사본에 자동 입력해주는 third-party 도구.
 
 ## 🚀 사용
 
@@ -21,19 +21,19 @@
 ## 시스템 요구사항
 
 - 데스크탑 PC (모바일 미지원)
-- Chrome / Edge / Firefox 등 데스크탑 브라우저
+- Chrome 브라우저 (확인된 환경)
 - Tampermonkey 확장프로그램
-- Google 계정 (Google Sheets 사용용)
-- mango.hke NIKKE 유레 시트의 **본인 사본**
+- Google 계정 (Google Sheets 사용)
+- NIKKE 유레 시트의 **본인 사본**
 
 ## 설치 + 사용 흐름 (요약)
 
-1. **Tampermonkey 확장 설치** → Chrome / Edge / Firefox 웹 스토어
+1. **Tampermonkey 확장 설치** → Chrome 웹 스토어
 2. **Greasyfork 유저스크립트 설치** → [니케 유레 자동 동기화 (v2)](https://greasyfork.org/scripts/579278)
-3. **본인 Google Drive에 NIKKE 유레 시트 사본 생성** → [원본 템플릿](https://docs.google.com/spreadsheets/d/1aoyt9aOiCZsoQp7m_1QjGEh82r19fQGwGu4LLG9DDjg/)에서 `파일 > 사본 만들기`
+3. **본인 Google Drive에 NIKKE 유레 시트 사본 생성** → [arca.live 게시글](https://arca.live/b/nikketgv/161405505)에서 시트 링크 확인 후 `파일 > 사본 만들기`
 4. **유니온 멤버 탭에 가입 순서대로 닉네임 입력** (최초 1회) → 32명
 5. **[도구 페이지](https://ssissun.github.io/nikke-raid-autosync-spa/) 접속** → Google 로그인 → 사본 시트 선택
-6. **[🎯 신규 회차 데이터 가져오기]** 클릭 → blablalink 새 탭에서 유저스크립트가 자동 수집
+6. **[🎯 신규 회차 데이터 가져오기]** 클릭 → 블라블라링크 새 탭에서 유저스크립트가 자동 수집
 7. 변경사항 미리보기 확인 후 **[✅ 모든 변경 적용]** 클릭 → 완료
 
 자세한 절차는 [USER_GUIDE.md](./USER_GUIDE.md) 참고.
@@ -50,8 +50,7 @@
 - **사용자 가이드**: [USER_GUIDE.md](./USER_GUIDE.md)
 - **유저스크립트**: [Greasyfork 579278](https://greasyfork.org/scripts/579278)
 - **유저스크립트 repo**: [nikke-raid-autosync-userscript](https://github.com/ssissun/nikke-raid-autosync-userscript)
-- **arca.live 게시글 + 문의**: [arca.live/b/nikketgv/161405505](https://arca.live/b/nikketgv/161405505)
-- **원본 시트**: [mango.hke NIKKE 유레 시트](https://docs.google.com/spreadsheets/d/1aoyt9aOiCZsoQp7m_1QjGEh82r19fQGwGu4LLG9DDjg/)
+- **NIKKE 유레 시트 (원본 + 설명)**: [arca.live/b/nikketgv/161405505](https://arca.live/b/nikketgv/161405505)
 - **원본 30초 입력법 유저스크립트** (v1.12): [Greasyfork 565386](https://greasyfork.org/scripts/565386)
 
 ## 기술 스택
@@ -63,4 +62,4 @@
 
 ## 라이선스
 
-MIT. mango.hke의 v1.12 30초 입력법을 fork하여 작성. 원작자에게 감사드립니다.
+MIT.
