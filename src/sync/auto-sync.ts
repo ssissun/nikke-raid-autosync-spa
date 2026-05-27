@@ -98,8 +98,7 @@ async function writeMemberRows(
  */
 function shiftRowsUp(
   rows: string[][],
-  leavingSheetRows: readonly number[],
-  nicknameColIdx: number
+  leavingSheetRows: readonly number[]
 ): void {
   // 1-indexed sheetRow → 0-indexed data row (sheetRow - 2, header=row1).
   const leavingIdx = leavingSheetRows
@@ -232,7 +231,7 @@ export async function applyMemberSync(
   // 2) leaving — data shift up (큰 sheetRow 부터)
   const leavingSheetRows = unmatchedSheetNicknames.map((u) => u.sheetRow);
   if (leavingSheetRows.length > 0) {
-    shiftRowsUp(dataRows, leavingSheetRows, nicknameColIdx);
+    shiftRowsUp(dataRows, leavingSheetRows);
   }
 
   // 3) joining — 빈 닉네임 슬롯에 채움 (위에서부터)
