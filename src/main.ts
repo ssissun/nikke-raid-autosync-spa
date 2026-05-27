@@ -1057,7 +1057,6 @@ function renderApp(): void {
       ${errorBlock}
       <section class="hint">
         <p>처음 사용하시는 분은 <a href="https://github.com/ssissun/nikke-raid-autosync-spa/blob/main/SIMPLE_USER_GUIDE.md" target="_blank" rel="noopener noreferrer">간편 가이드</a> 또는 <a href="https://github.com/ssissun/nikke-raid-autosync-spa/blob/main/USER_GUIDE.md" target="_blank" rel="noopener noreferrer">전체 사용자 가이드</a>를 확인해주세요.</p>
-        <p>문의·피드백: <a href="https://arca.live/b/nikketgv/161405505" target="_blank" rel="noopener noreferrer">arca.live 게시글</a></p>
       </section>
     </main>
   `;
