@@ -31,6 +31,23 @@ export function validateNikkeRaidPayload(data: unknown): data is NikkeRaidPayloa
           obj.raidNum === null ||
           isStringField(obj, "raidNum"))
       );
+    case "nikke-raid-multi":
+      // v2.4.0+ 다회차. rounds 각 항목 얕은 검증.
+      return (
+        Array.isArray(obj.members) &&
+        Array.isArray(obj.availableRaidNums) &&
+        Array.isArray(obj.rounds) &&
+        (obj.rounds as unknown[]).every((r) => {
+          if (typeof r !== "object" || r === null) return false;
+          const rr = r as Record<string, unknown>;
+          return (
+            typeof rr.raidNum === "string" &&
+            Array.isArray(rr.raid) &&
+            typeof rr.memberSyncroLevels === "object" &&
+            rr.memberSyncroLevels !== null
+          );
+        })
+      );
     case "need-login":
       return true;
     case "no-data":

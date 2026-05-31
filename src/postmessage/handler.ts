@@ -30,6 +30,7 @@ export function handleMessage(event: MessageEvent): void {
   const payload: NikkeRaidPayload = data;
   switch (payload.type) {
     case "nikke-raid-data":
+    case "nikke-raid-multi":
       window.dispatchEvent(new CustomEvent("payloadReceived", { detail: payload }));
       break;
     case "need-login":

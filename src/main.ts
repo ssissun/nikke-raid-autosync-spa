@@ -25,19 +25,24 @@ import {
 } from "./storage";
 import {
   prepareDryRun,
+  prepareRoundBatchUpdate,
   type BatchUpdatePlan,
 } from "./dryrun";
 import {
   ALLOWED_FINGERPRINTS,
   appendRaidResultRow,
+  applyMultiRoundWrite,
   computeFingerprint,
   ensureRaidColumn,
   guessNextRaidNum,
   migrateToMemberId,
+  readExistingRaidNums,
   writeRaidData,
 } from "./sheets";
 import { applyMemberSync, type AutoSyncResult } from "./sync/auto-sync";
-import type { NikkeRaidPayload } from "./types";
+import { normalizePayload, type NormalizedMultiPayload } from "./payload/normalize";
+import { selectMissingRounds } from "./payload/round-planner";
+import type { NikkeRaidPayload, ProcessedRaidRow } from "./types";
 import type { NicknameChange } from "./matching/types";
 
 const APP_VERSION = "0.1.0";
@@ -88,20 +93,30 @@ let lastBatchPlan: BatchUpdatePlan | null = null;
 type WriteStatus = "idle" | "running" | "done" | "error";
 let writeStatus: WriteStatus = "idle";
 const writeStages: Record<string, string> = {};
-let writeResult: { backupTabName: string } | null = null;
+let writeResult: { backupTabName: string; writtenRaidNums?: string[] } | null = null;
+
+// 회차별 미리보기 요약
+interface RoundPreview {
+  raidNum: string;
+  raidStatsRowsCount: number;
+  bossNames: string[];
+}
 
 // 변경 미리보기 (2-button 흐름) — payload 수신 시 자동 계산.
 interface ChangesPreview {
-  raidNum: string;
+  targetRaidNums: string[]; // 처리 대상 회차 (오름차순)
+  alreadyInSheet: string[]; // 시트에 이미 있어 skip
+  unavailableButRequested: string[]; // 가용 목록엔 있으나 데이터 없는 회차
+  rounds: RoundPreview[]; // 회차별 요약
+  // 멤버 변동(auto-sync)은 현재 멤버 기준 1회 — 회차별 아님
   leavingNicknames: string[]; // 시트에만 있는 닉네임 = 탈퇴
   joiningNicknames: string[]; // payload에만 있는 닉네임 = 신규
   nicknameChanges: NicknameChange[]; // staying 멤버 중 닉네임이 바뀐 항목
-  raidStatsRowsCount: number;
-  bossNames: string[]; // 이번 회차 보스 distinct list
   layout: "pre-migration" | "post-migration";
   needsMemberIdMigration: boolean; // layout === pre-migration 일 때 true
 }
 let lastChangesPreview: ChangesPreview | null = null;
+let lastNormalized: NormalizedMultiPayload | null = null; // previewChanges → applyAllChanges 전달
 let nonParticipatingNicknames: string[] | null = null;
 
 // 신뢰 다이얼로그 (Hybrid fingerprint — BUILT_IN 미일치 시 사용자 옵트인)
@@ -255,9 +270,34 @@ async function diagnoseSheet(): Promise<SheetDiagnostic | null> {
   }
 }
 
+// 시트의 최대 기존 회차 — userscript 백필 시작점(from) 계산용. autoDiagnose 시 캐시.
+let lastMaxExistingRound: number | null = null;
+
+async function refreshExistingRounds(): Promise<void> {
+  const token = getAccessToken();
+  const sheetId = getSheetId();
+  if (token === null || sheetId === null) {
+    lastMaxExistingRound = null;
+    return;
+  }
+  try {
+    const existing = await readExistingRaidNums(sheetId, token);
+    let max = 0;
+    for (const n of existing) {
+      const v = Number(n);
+      if (Number.isFinite(v) && v > max) max = v;
+    }
+    lastMaxExistingRound = max > 0 ? max : null;
+  } catch (e) {
+    console.warn("[NRA-SPA] readExistingRaidNums 실패:", e);
+    lastMaxExistingRound = null;
+  }
+}
+
 async function autoDiagnose(): Promise<void> {
   await diagnoseSheet();
   await checkFingerprintTrust();
+  await refreshExistingRounds();
   renderApp();
 }
 
@@ -387,9 +427,15 @@ async function listSheetTabs(): Promise<string[]> {
 // window.opener.postMessage로 본 SPA에 payload 전달.
 function openBlablalinkRaidPage(): void {
   // ?nra=1 — userscript SPA-only trigger 식별자
-  // userscript 는 이 query param 이 있을 때만 active (일반 blablalink 사용 시 차단)
+  // &from={n} — 다회차 백필 시작 회차 (시트 max 기존 회차 + 1). userscript 가 from~현재 수집.
+  //   시트가 비었으면 from 생략 → userscript 가 가용한 과거 회차까지 백필.
+  const fromRound =
+    lastMaxExistingRound !== null && lastMaxExistingRound > 0
+      ? lastMaxExistingRound + 1
+      : null;
+  const fromParam = fromRound !== null ? `&from=${fromRound}` : "";
   const w = window.open(
-    "https://www.blablalink.com/shiftyspad/union-raid?lang=ko&nra=1",
+    `https://www.blablalink.com/shiftyspad/union-raid?lang=ko&nra=1${fromParam}`,
     "blablalink-union-raid"
   );
   if (w === null) {
@@ -608,60 +654,85 @@ async function autoSyncMembers(): Promise<void> {
  * 2-button 흐름 1단계 — payload 수신 후 자동 호출.
  * 자동 매칭 + 변경사항 미리보기 계산. 실제 시트 변경 없음.
  */
+function bossNamesOf(rows: readonly ProcessedRaidRow[]): string[] {
+  const set = new Set<string>();
+  for (const row of rows) {
+    const boss = row[2];
+    if (typeof boss === "string" && boss.length > 0) set.add(boss);
+  }
+  return Array.from(set);
+}
+
 async function previewChanges(): Promise<void> {
   const token = getAccessToken();
   const sheetId = getSheetId();
   const payload = getLastPayload();
   if (token === null || sheetId === null || payload === null) return;
-  if (payload.type !== "nikke-raid-data") return;
+  if (payload.type !== "nikke-raid-data" && payload.type !== "nikke-raid-multi") {
+    return;
+  }
 
   try {
     lastError = null;
-    // 1) 자동 매칭
+
+    // 0) 정규화 (single/multi → 다회차 정규형)
+    const normalized = normalizePayload(payload);
+    if (normalized === null) return;
+    lastNormalized = normalized;
+
+    // 1) 자동 매칭 (현재 멤버 기준 1회)
     clearSyncClassification();
-    await startClassificationFlow(token, sheetId, payload.members);
+    await startClassificationFlow(token, sheetId, normalized.members);
     const classResult = getSyncClassification();
     if (classResult === null) return;
 
-    // 2) raidNum 결정
-    let raidNumStr: string;
-    if (payload.raidNum !== undefined && payload.raidNum !== null) {
-      raidNumStr = payload.raidNum;
-    } else {
+    // 2) 시트 기존 회차 → 누락 회차 선별
+    const existing = await readExistingRaidNums(sheetId, token);
+    let selection = selectMissingRounds(normalized, existing);
+
+    // fallback: 회차 정보 전무(레거시 single, raidNum 부재로 round 0개) → guessNextRaidNum
+    if (
+      selection.targetRounds.length === 0 &&
+      normalized.rounds.length === 0
+    ) {
       const guessed = await guessNextRaidNum(sheetId, token);
-      if (guessed === null) {
-        lastError =
-          "raidNum 결정 실패 — 유저스크립트 회차 메타 미캡처 + 시트 기존 회차 데이터도 부재";
-        renderApp();
-        return;
+      if (guessed !== null && payload.type === "nikke-raid-data") {
+        // 단일 추측 회차로 normalized 보강
+        const syncro: Record<string, number> = {};
+        for (const m of normalized.members) {
+          if (m.synchro_level > 0) syncro[m.member_id] = m.synchro_level;
+        }
+        const fallbackRound = {
+          raidNum: guessed,
+          raid: payload.raid,
+          memberSyncroLevels: syncro,
+        };
+        lastNormalized = { ...normalized, rounds: [fallbackRound] };
+        selection = {
+          targetRounds: [fallbackRound],
+          alreadyInSheet: [],
+          unavailableButRequested: [],
+        };
       }
-      raidNumStr = guessed;
     }
 
-    // 3) 변경사항 추출
-    const leavingNicknames = classResult.unmatchedSheetNicknames.map(
-      (u) => u.nickname
-    );
-    const joiningNicknames = classResult.unmatchedPayloadMembers.map(
-      (m) => m.nickname
-    );
-    const bossSet = new Set<string>();
-    for (const row of payload.raid) {
-      const boss = row[2];
-      if (typeof boss === "string" && boss.length > 0) bossSet.add(boss);
-    }
     const layout =
       lastDiagnostic?.guessedFormat === "pre-migration"
         ? "pre-migration"
         : "post-migration";
 
     lastChangesPreview = {
-      raidNum: raidNumStr,
-      leavingNicknames,
-      joiningNicknames,
+      targetRaidNums: selection.targetRounds.map((r) => r.raidNum),
+      alreadyInSheet: selection.alreadyInSheet,
+      unavailableButRequested: selection.unavailableButRequested,
+      rounds: selection.targetRounds.map((r) => ({
+        raidNum: r.raidNum,
+        raidStatsRowsCount: r.raid.length,
+        bossNames: bossNamesOf(r.raid),
+      })),
+      leavingNicknames: classResult.unmatchedSheetNicknames.map((u) => u.nickname),
+      joiningNicknames: classResult.unmatchedPayloadMembers.map((m) => m.nickname),
       nicknameChanges: classResult.nicknameChanges,
-      raidStatsRowsCount: payload.raid.length,
-      bossNames: Array.from(bossSet),
       layout,
       needsMemberIdMigration: layout === "pre-migration",
     };
@@ -685,15 +756,21 @@ async function previewChanges(): Promise<void> {
 async function applyAllChanges(): Promise<void> {
   const token = getAccessToken();
   const sheetId = getSheetId();
-  const payload = getLastPayload();
   if (
     token === null ||
     sheetId === null ||
-    payload === null ||
-    payload.type !== "nikke-raid-data" ||
-    lastChangesPreview === null
+    lastChangesPreview === null ||
+    lastNormalized === null
   ) {
     lastError = "조건 미충족 (로그인/시트/payload/preview 필요)";
+    renderApp();
+    return;
+  }
+  const preview = lastChangesPreview;
+  const normalized = lastNormalized;
+
+  if (preview.targetRaidNums.length === 0) {
+    lastError = "처리할 회차 없음 — 시트가 이미 최신 상태입니다.";
     renderApp();
     return;
   }
@@ -708,49 +785,30 @@ async function applyAllChanges(): Promise<void> {
 
     // 0) Fingerprint 사전 검증 (Hybrid — BUILT_IN + USER_REGISTERED)
     const fingerprint = await computeFingerprint(sheetId, token);
-    const allowed = [...ALLOWED_FINGERPRINTS, ...getUserFingerprints()];
-    if (!allowed.includes(fingerprint)) {
-      // 신뢰 다이얼로그 표시 — 사용자 옵트인 흐름 진입
+    const allowedFp = [...ALLOWED_FINGERPRINTS, ...getUserFingerprints()];
+    if (!allowedFp.includes(fingerprint)) {
       pendingTrust = { hash: fingerprint, checkedItems: new Set() };
       writeStatus = "idle";
       renderApp();
       return;
     }
 
-    // 0.5) Pre-migration → Post-migration 자동 마이그레이션
-    // 시트의 Col B 가 닉네임 컬럼이면 member_id 숨김 컬럼을 자동 추가하여
-    // 다음 사용부터 닉네임 변경에도 강건한 member_id 기반 매칭 가능.
-    // fingerprint 영향 없음 (TOOL_OWNED_COLUMNS 에 member_id 등록).
-    //
-    // 주의: 마이그레이션 후 매칭 재실행은 하지 않음.
-    // 이유: post-migration 모드 readColBMap 은 member_id 비어있는 row 의 닉네임을
-    // colBMap 에 안 넣어 leaving 분류에서 누락됨. backfill 모드의 매칭 결과 (unmatched 까지 보존)
-    // 그대로 활용하여 auto-sync 가 정상 leaving 처리하도록 한다.
-    if (lastChangesPreview.needsMemberIdMigration) {
+    // 0.5) Pre→Post member_id 마이그레이션 (1회). 회차 무관.
+    if (preview.needsMemberIdMigration) {
       const classResult = getSyncClassification();
-      if (classResult === null) {
-        throw new Error("마이그레이션 진행 불가 — 매칭 결과 부재");
-      }
+      if (classResult === null) throw new Error("마이그레이션 진행 불가 — 매칭 결과 부재");
       const memberIdByRow = new Map<number, string>();
       for (const s of classResult.classification.staying) {
         memberIdByRow.set(s.sheetRow, s.member_id);
       }
-      const migrateResult = await migrateToMemberId(
-        sheetId,
-        token,
-        memberIdByRow
-      );
-      console.info(
-        `[NRA-SPA] member_id 마이그레이션 완료 (${migrateResult.filledRows}건 채움)`
-      );
-      // 후속 단계 layout 동기화 — auto-sync 가 post-migration 분기 타도록.
-      lastChangesPreview.layout = "post-migration";
-      lastChangesPreview.needsMemberIdMigration = false;
-      // 시트 진단만 갱신 (매칭 재실행은 X — backfill 결과를 leaving 처리에 그대로 사용)
+      const migrateResult = await migrateToMemberId(sheetId, token, memberIdByRow);
+      console.info(`[NRA-SPA] member_id 마이그레이션 완료 (${migrateResult.filledRows}건)`);
+      preview.layout = "post-migration";
+      preview.needsMemberIdMigration = false;
       await diagnoseSheet();
     }
 
-    // 1) auto-sync (탈퇴/신규 있을 때만)
+    // 1) auto-sync (현재 멤버 기준 1회 — 탈퇴/신규 있을 때만)
     const classResult = getSyncClassification();
     if (
       classResult !== null &&
@@ -762,78 +820,98 @@ async function applyAllChanges(): Promise<void> {
         token,
         classResult.unmatchedSheetNicknames,
         classResult.unmatchedPayloadMembers,
-        { layout: lastChangesPreview.layout }
+        { layout: preview.layout }
       );
       console.info("[NRA-SPA] auto-sync 완료", lastAutoSync);
-      // 시트 변경 후 재진단 + 재매칭 (member_id 매칭 새로)
       await diagnoseSheet();
       clearSyncClassification();
-      await startClassificationFlow(token, sheetId, payload.members);
+      await startClassificationFlow(token, sheetId, normalized.members);
     }
 
-    // 2) 회차 컬럼 보장
-    const raidNumStr = lastChangesPreview.raidNum;
-    const resolution = await ensureRaidColumn(
-      sheetId,
-      raidNumStr,
-      token,
-      fetch,
-      lastChangesPreview.layout
-    );
-    const syncroColumn = resolution.column;
-
-    // 3) dry-run plan
-    const lastRaidRow = await getLastRaidRow(sheetId, token);
-    const targetLabel = `${raidNumStr}차`;
-    const normalizedRaid = payload.raid.map((row) => {
-      const next = [...row] as typeof row;
-      next[0] = targetLabel;
-      return next;
-    });
     const refreshedClass = getSyncClassification();
-    if (refreshedClass === null) {
-      throw new Error("재매칭 결과 부재");
-    }
-    const plan = prepareDryRun({
-      payload: { ...payload, raidNum: raidNumStr, raid: normalizedRaid },
-      classification: refreshedClass.classification,
-      alerts: refreshedClass.alerts,
-      lastRaidRow,
-      syncroColumn,
-    });
-    lastBatchPlan = plan;
+    if (refreshedClass === null) throw new Error("재매칭 결과 부재");
 
-    // 4) 실제 쓰기 — Hybrid allowed list (BUILT_IN + USER_REGISTERED) 전달.
-    //    사전 0 단계에서 이미 검증했지만 방어적 재검증 (allowed 일관 유지).
-    const result = await writeRaidData(sheetId, plan, token, {
-      skipFingerprint: false,
-      allowedFingerprints: [
-        ...ALLOWED_FINGERPRINTS,
-        ...getUserFingerprints(),
-      ],
-    });
-
-    // 5) 레이드 결과 row 추가 (부수)
-    try {
-      const rrResult = await appendRaidResultRow(sheetId, raidNumStr, token);
-      console.info(
-        `[NRA-SPA] 레이드 결과 row 추가: ${rrResult.raidNumCol}${rrResult.sheetRow}` +
-          (rrResult.alreadyExisted ? " (이미 존재)" : "")
+    // 2) 회차 루프 — ensureRaidColumn 순차 + prepareRoundBatchUpdate (lastRaidRow 누적)
+    const roundByNum = new Map(normalized.rounds.map((r) => [r.raidNum, r]));
+    let cumLastRaidRow = await getLastRaidRow(sheetId, token);
+    const plans: BatchUpdatePlan[] = [];
+    for (const raidNum of preview.targetRaidNums) {
+      const round = roundByNum.get(raidNum);
+      if (round === undefined) continue;
+      const resolution = await ensureRaidColumn(
+        sheetId,
+        raidNum,
+        token,
+        fetch,
+        preview.layout
       );
-    } catch (e) {
-      console.warn("[NRA-SPA] 레이드 결과 row 추가 실패 (치명적 아님):", e);
+      // index 0 라벨을 `${raidNum}차` 로 정규화
+      const targetLabel = `${raidNum}차`;
+      const normalizedRaid = round.raid.map((row) => {
+        const next = [...row] as ProcessedRaidRow;
+        next[0] = targetLabel;
+        return next;
+      });
+      const plan = prepareRoundBatchUpdate({
+        classification: refreshedClass.classification,
+        alerts: refreshedClass.alerts,
+        raidNum,
+        raidRows: normalizedRaid,
+        roundSyncroLevels: round.memberSyncroLevels,
+        members: normalized.members,
+        lastRaidRow: cumLastRaidRow,
+        syncroColumn: resolution.column,
+      });
+      plans.push(plan);
+      cumLastRaidRow += plan.raidStatsRows.length;
+    }
+    lastBatchPlan = plans[plans.length - 1] ?? null;
+
+    // 3) 통합 쓰기 — fingerprint 1회 + backup 1회(라벨=max 회차) + executeBatchUpdate N회
+    const maxRaidNum = preview.targetRaidNums
+      .map((n) => Number(n))
+      .reduce((a, b) => Math.max(a, b), 0)
+      .toString();
+    const result = await applyMultiRoundWrite({
+      spreadsheetId: sheetId,
+      accessToken: token,
+      plans,
+      backupRaidNum: maxRaidNum,
+      allowedFingerprints: allowedFp,
+    });
+    console.info("[NRA-SPA] 다회차 쓰기 완료:", result.writtenRaidNums.join(", "));
+
+    // 4) 레이드 결과 row 추가 — 회차별 (idempotent)
+    for (const raidNum of result.writtenRaidNums) {
+      try {
+        const rr = await appendRaidResultRow(sheetId, raidNum, token);
+        console.info(
+          `[NRA-SPA] 레이드 결과 row: ${rr.raidNumCol}${rr.sheetRow}` +
+            (rr.alreadyExisted ? " (이미 존재)" : "")
+        );
+      } catch (e) {
+        console.warn(`[NRA-SPA] 레이드 결과 row 추가 실패 ${raidNum}차 (치명적 아님):`, e);
+      }
     }
 
-    // 6) 미참여 멤버 계산 — staying 닉네임 중 payload.raid 에 한 번도 안 나온 닉네임
-    const participatingNames = new Set<string>();
-    for (const row of payload.raid) {
-      const nick = row[1];
-      if (typeof nick === "string" && nick.length > 0) participatingNames.add(nick);
+    // 5) 미참여 멤버 — 최신(max) 회차 기준
+    const latestNum = result.writtenRaidNums
+      .map((n) => Number(n))
+      .reduce((a, b) => Math.max(a, b), 0)
+      .toString();
+    const latestRound = roundByNum.get(latestNum);
+    if (latestRound) {
+      const participating = new Set<string>();
+      for (const row of latestRound.raid) {
+        const nick = row[1];
+        if (typeof nick === "string" && nick.length > 0) participating.add(nick);
+      }
+      nonParticipatingNicknames = normalized.members
+        .map((m) => m.nickname)
+        .filter((n) => !participating.has(n));
+    } else {
+      nonParticipatingNicknames = null;
     }
-    const allMemberNicknames = payload.members.map((m) => m.nickname);
-    nonParticipatingNicknames = allMemberNicknames.filter(
-      (n) => !participatingNames.has(n)
-    );
 
     writeStatus = "done";
     writeResult = result;
@@ -980,7 +1058,7 @@ function renderApp(): void {
   const payloadBlock = authed && sheetId !== null && !trustGate
     ? payload === null
       ? ""
-      : payload.type === "nikke-raid-data"
+      : payload.type === "nikke-raid-data" || payload.type === "nikke-raid-multi"
         ? lastChangesPreview === null
           ? `<p class="status">📨 데이터를 받았습니다. 변경사항을 계산 중...</p>`
           : ""
@@ -988,14 +1066,23 @@ function renderApp(): void {
     : "";
 
   const preview = lastChangesPreview;
+  const totalNewRows = preview
+    ? preview.rounds.reduce((a, r) => a + r.raidStatsRowsCount, 0)
+    : 0;
+  const noTarget = preview !== null && preview.targetRaidNums.length === 0;
   const previewBlock =
     preview !== null
       ? `
           <h3>📋 예상되는 변경사항</h3>
+          ${
+            noTarget
+              ? `<p class="status status--ok">✅ 시트가 이미 최신 상태입니다. 추가할 회차가 없습니다.${preview.alreadyInSheet.length > 0 ? ` (시트 보유 회차: ${preview.alreadyInSheet.map((n) => escapeHtml(n) + "차").join(", ")})` : ""}</p>`
+              : `
           <ul class="changes">
-            <li><strong>회차</strong>: ${escapeHtml(preview.raidNum)}차</li>
-            <li><strong>레이드 통계 신규 행</strong>: ${preview.raidStatsRowsCount}행</li>
-            <li><strong>이번 회차 보스</strong> (${preview.bossNames.length}종): ${preview.bossNames.map((b) => escapeHtml(b)).join(" · ")}</li>
+            <li><strong>처리할 회차</strong> (${preview.targetRaidNums.length}개): ${preview.targetRaidNums.map((n) => escapeHtml(n) + "차").join(" · ")}</li>
+            ${preview.alreadyInSheet.length > 0 ? `<li><strong>이미 시트에 있어 skip</strong>: ${preview.alreadyInSheet.map((n) => escapeHtml(n) + "차").join(", ")}</li>` : ""}
+            ${preview.unavailableButRequested.length > 0 ? `<li class="status--warn"><strong>데이터 없는 회차</strong>: ${preview.unavailableButRequested.map((n) => escapeHtml(n) + "차").join(", ")}</li>` : ""}
+            <li><strong>레이드 통계 신규 행</strong>: 총 ${totalNewRows}행</li>
             <li><strong>탈퇴 멤버</strong> (${preview.leavingNicknames.length}명)${preview.leavingNicknames.length > 0 ? `: ${preview.leavingNicknames.map((n) => escapeHtml(n)).join(", ")}` : ""}</li>
             <li><strong>신규 가입 멤버</strong> (${preview.joiningNicknames.length}명)${preview.joiningNicknames.length > 0 ? `: ${preview.joiningNicknames.map((n) => escapeHtml(n)).join(", ")}` : ""}</li>
             <li><strong>닉네임 변경 멤버</strong> (${preview.nicknameChanges.length}명)${preview.nicknameChanges.length > 0 ? `: ${preview.nicknameChanges.map((c) => `${escapeHtml(c.old)} → ${escapeHtml(c.new)}`).join(", ")}` : ""}</li>
@@ -1005,9 +1092,18 @@ function renderApp(): void {
                 : ""
             }
           </ul>
+          <details>
+            <summary>회차별 상세 (${preview.rounds.length}개)</summary>
+            <ul class="changes">
+              ${preview.rounds.map((r) => `<li><strong>${escapeHtml(r.raidNum)}차</strong>: ${r.raidStatsRowsCount}행 · 보스 ${r.bossNames.length}종 (${r.bossNames.map((b) => escapeHtml(b)).join(" · ")})</li>`).join("")}
+            </ul>
+          </details>
+          <p class="meta">⚠️ 과거 회차의 싱크로 레벨은 현재 잔류 멤버 기준으로만 기록됩니다 (그 시점 탈퇴 멤버 제외).</p>
+              `
+          }
           ${
-            writeStatus === "idle"
-              ? `<button type="button" id="apply-all-btn" ${trustGate ? "disabled" : ""}>✅ 모든 변경 적용 (유니온 멤버 · 레이드 통계 · 레이드 결과)</button>`
+            writeStatus === "idle" && !noTarget
+              ? `<button type="button" id="apply-all-btn" ${trustGate ? "disabled" : ""}>✅ 모든 변경 적용 (${preview.targetRaidNums.length}개 회차)</button>`
               : ""
           }
           ${
@@ -1017,11 +1113,11 @@ function renderApp(): void {
           }
           ${
             writeStatus === "done" && writeResult !== null
-              ? `<p class="status status--ok">✅ 모든 변경 완료 · backup 탭 <code>${escapeHtml(writeResult.backupTabName)}</code></p>
+              ? `<p class="status status--ok">✅ ${writeResult.writtenRaidNums && writeResult.writtenRaidNums.length > 0 ? `${writeResult.writtenRaidNums.map((n) => escapeHtml(n) + "차").join("·")} 적용 완료` : "모든 변경 완료"} · backup 탭 <code>${escapeHtml(writeResult.backupTabName)}</code></p>
                  ${
                    nonParticipatingNicknames !== null
                      ? nonParticipatingNicknames.length > 0
-                       ? `<p class="status status--warn">⚠️ 이번 레이드 미참여 멤버 (${nonParticipatingNicknames.length}명): ${nonParticipatingNicknames.map((n) => escapeHtml(n)).join(", ")}</p>`
+                       ? `<p class="status status--warn">⚠️ 최신 회차 미참여 멤버 (${nonParticipatingNicknames.length}명): ${nonParticipatingNicknames.map((n) => escapeHtml(n)).join(", ")}</p>`
                        : `<p class="status status--ok">🎉 모든 멤버 참여 완료 — 미참여자 0명</p>`
                      : ""
                  }`
@@ -1214,6 +1310,7 @@ function bootstrap(): void {
   window.addEventListener("payloadReceived", () => {
     // 2-button 흐름 — payload 수신 후 자동 매칭 + 변경사항 계산
     lastChangesPreview = null;
+    lastNormalized = null;
     nonParticipatingNicknames = null;
     lastBatchPlan = null;
     lastAutoSync = null;

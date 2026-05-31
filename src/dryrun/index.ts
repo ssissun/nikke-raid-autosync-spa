@@ -57,6 +57,7 @@ export async function confirmWrite(
 
 export {
   prepareBatchUpdate,
+  prepareRoundBatchUpdate,
   calculateRaidStatsRows,
   calculateMemberSyncroUpdates,
 } from "./calculator";
@@ -64,5 +65,6 @@ export { renderDryRunPreview, renderProgressUI } from "./ui";
 export type {
   BatchUpdatePlan,
   MemberSyncroUpdate,
+  PrepareRoundArgs,
 } from "./calculator";
 export type { ProgressStage } from "./ui";

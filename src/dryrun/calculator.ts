@@ -31,16 +31,24 @@ function computeBackupTabName(raidNum: string | null | undefined): string {
 }
 
 /**
- * payload.raid (ProcessedRaidRow[]) → string[][] (Sheets 행). 헤드리스 — header row 없음.
+ * ProcessedRaidRow[] → string[][] (Sheets 행). 헤드리스 — header row 없음.
+ */
+export function raidRowsToStrings(
+  raid: readonly ProcessedRaidRow[]
+): string[][] {
+  return raid.map((row) =>
+    row.map((cell) => (typeof cell === "number" ? String(cell) : cell))
+  );
+}
+
+/**
+ * payload.raid (ProcessedRaidRow[]) → string[][] (Sheets 행). 레거시 single 용 wrapper.
  */
 export function calculateRaidStatsRows(
   payload: NikkeRaidPayload
 ): string[][] {
   if (payload.type !== "nikke-raid-data") return [];
-  const raid: readonly ProcessedRaidRow[] = payload.raid;
-  return raid.map((row) =>
-    row.map((cell) => (typeof cell === "number" ? String(cell) : cell))
-  );
+  return raidRowsToStrings(payload.raid);
 }
 
 /**
@@ -49,19 +57,28 @@ export function calculateRaidStatsRows(
 export function calculateMemberSyncroUpdates(
   classification: SyncClassification,
   members: readonly GuildMember[],
-  syncroColumn: string
+  syncroColumn: string,
+  roundSyncroLevels?: Record<string, number>
 ): MemberSyncroUpdate[] {
   const memberById = new Map<string, GuildMember>();
   for (const m of members) memberById.set(m.member_id, m);
+
+  // 회차 당시 레벨 우선, 없으면 현재 synchro_level fallback.
+  const levelFor = (memberId: string): number => {
+    const round = roundSyncroLevels?.[memberId];
+    if (round !== undefined && round > 0) return round;
+    return memberById.get(memberId)?.synchro_level ?? 0;
+  };
 
   const updates: MemberSyncroUpdate[] = [];
   for (const s of classification.staying) {
     const m = memberById.get(s.member_id);
     if (m === undefined) continue;
-    if (m.synchro_level <= 0) continue;
+    const lv = levelFor(s.member_id);
+    if (lv <= 0) continue;
     updates.push({
       sheetRow: s.sheetRow,
-      syncroLevel: m.synchro_level,
+      syncroLevel: lv,
       column: syncroColumn,
     });
   }
@@ -70,10 +87,11 @@ export function calculateMemberSyncroUpdates(
   // 이 경우 dryrun에서 payload 순서 그대로 syncro 입력.
   if (updates.length === 0 && classification.staying.length === 0) {
     members.forEach((m, idx) => {
-      if (m.synchro_level <= 0) return;
+      const lv = levelFor(m.member_id);
+      if (lv <= 0) return;
       updates.push({
         sheetRow: idx + 2, // header=row1, 데이터 row2부터
-        syncroLevel: m.synchro_level,
+        syncroLevel: lv,
         column: syncroColumn,
       });
     });
@@ -123,6 +141,54 @@ export function prepareBatchUpdate(
     raidStatsRows,
     memberSyncroUpdates,
     syncroColumn,
+    unmatchedNames,
+    isConfirmable: unmatchedNames.length === 0,
+  };
+}
+
+export interface PrepareRoundArgs {
+  classification: SyncClassification;
+  alerts: readonly string[];
+  raidNum: string;
+  raidRows: readonly ProcessedRaidRow[]; // 이 회차 rows (index0 라벨 정규화 완료)
+  roundSyncroLevels: Record<string, number>;
+  members: readonly GuildMember[];
+  lastRaidRow: number; // 누적 — 이전 회차 행 수 반영
+  syncroColumn: string;
+}
+
+/**
+ * 회차 1개 분량 → BatchUpdatePlan. 다회차 오케스트레이터가 회차별로 호출.
+ * raidRows 는 호출 측에서 index0 라벨을 `${raidNum}차` 로 정규화한 상태여야 함.
+ */
+export function prepareRoundBatchUpdate(args: PrepareRoundArgs): BatchUpdatePlan {
+  const raidStatsRows = raidRowsToStrings(args.raidRows);
+  const memberSyncroUpdates = calculateMemberSyncroUpdates(
+    args.classification,
+    args.members,
+    args.syncroColumn,
+    args.roundSyncroLevels
+  );
+
+  const unmatchedNames: string[] = [];
+  for (const a of args.alerts) {
+    if (a.includes("매칭 실패") || a.toLowerCase().includes("unmatched")) {
+      unmatchedNames.push(a);
+    }
+  }
+
+  const raidStatsRange =
+    raidStatsRows.length > 0
+      ? `${RAID_STATS_SHEET}!A${args.lastRaidRow + 1}:P${args.lastRaidRow + raidStatsRows.length}`
+      : "";
+
+  return {
+    raidNum: args.raidNum,
+    backupTabName: computeBackupTabName(args.raidNum),
+    raidStatsRange,
+    raidStatsRows,
+    memberSyncroUpdates,
+    syncroColumn: args.syncroColumn,
     unmatchedNames,
     isConfirmable: unmatchedNames.length === 0,
   };

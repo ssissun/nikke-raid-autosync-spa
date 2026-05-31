@@ -83,11 +83,18 @@ export {
   columnNumberToLetter,
 } from "./find-column";
 export type { RaidColumnResolution, RaidColumnLayout } from "./find-column";
+export { appendRaidResultRow } from "./raid-result";
+export type { AppendRaidResultResult } from "./raid-result";
+export { migrateToMemberId } from "./migrate-to-member-id";
+export { applyMultiRoundWrite } from "./multi-round";
+export type {
+  MultiRoundWriteArgs,
+  MultiRoundWriteResult,
+} from "./multi-round";
 export {
   guessNextRaidNum,
   guessFromMemberHeader,
   guessFromRaidStats,
+  readExistingRaidNums,
+  extractRaidNumSet,
 } from "./guess-raid-num";
-export { appendRaidResultRow } from "./raid-result";
-export type { AppendRaidResultResult } from "./raid-result";
-export { migrateToMemberId } from "./migrate-to-member-id";

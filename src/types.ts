@@ -33,13 +33,30 @@ export type ProcessedRaidRow = [
   "O" | "" // 15: finalHit (마지막 타격)
 ];
 
+// 회차 1개 분량 데이터 (다회차 payload 의 구성 단위)
+export interface RaidRoundData {
+  raidNum: string; // "40" (숫자 문자열, 라벨 아님)
+  raid: ProcessedRaidRow[]; // 이 회차 row (index 0 라벨 = `${raidNum}차`)
+  // 레이드 당시 싱크로 레벨 — member_id → 그 회차 squad 최고 니케 lv (userscript 계산).
+  // 미참여/탈퇴 멤버는 없음 → SPA 가 fallback(현재 synchro).
+  memberSyncroLevels: Record<string, number>;
+}
+
 export type NikkeRaidPayload =
   | {
-      type: "nikke-raid-data";
+      type: "nikke-raid-data"; // 레거시 단일 (하위호환)
       raidNum?: string | null; // GetUnionRaidLevelInfo 미캡처 시 null/undefined
       capturedAt: string;
       raid: ProcessedRaidRow[];
       members: GuildMember[];
+      meta: { guildId: string; areaId: string };
+    }
+  | {
+      type: "nikke-raid-multi"; // 다회차 (v2.4.0+)
+      capturedAt: string;
+      availableRaidNums: string[]; // 실제 데이터 있는 fetch 성공 회차 (오름차순)
+      rounds: RaidRoundData[];
+      members: GuildMember[]; // 현재 멤버 (auto-sync / 매칭 기준)
       meta: { guildId: string; areaId: string };
     }
   | { type: "need-login"; capturedAt: string }
