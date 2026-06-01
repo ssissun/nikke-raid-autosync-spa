@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { normalizePayload } from "./normalize";
 import { selectMissingRounds } from "./round-planner";
-import { prepareRoundBatchUpdate } from "../dryrun/calculator";
+import {
+  prepareRoundBatchUpdate,
+  calculateMemberSyncroUpdates,
+} from "../dryrun/calculator";
 import type {
   GuildMember,
   NikkeRaidPayload,
@@ -145,20 +148,22 @@ describe("prepareRoundBatchUpdate — 회차 당시 레벨 우선", () => {
   };
   const members = [member("m1", "A", 540), member("m2", "B", 600)];
 
-  it("roundSyncroLevels 가 현재 synchro 보다 우선", () => {
+  it("참가 회차 당시 레벨만 기록 — 미참가 멤버는 fallback 없이 빈 셀(skip)", () => {
     const plan = prepareRoundBatchUpdate({
       classification,
       alerts: [],
       raidNum: "40",
       raidRows: [row("40차", "A", "boss")],
-      roundSyncroLevels: { m1: 515 }, // m1 은 회차 당시 515, m2 는 미제공
+      roundSyncroLevels: { m1: 515 }, // m1 만 참가(515). m2 는 그 회차 미참가.
       members,
       lastRaidRow: 100,
       syncroColumn: "H",
     });
     const byRow = new Map(plan.memberSyncroUpdates.map((u) => [u.sheetRow, u.syncroLevel]));
-    expect(byRow.get(2)).toBe(515); // 회차 당시
-    expect(byRow.get(3)).toBe(600); // fallback 현재
+    expect(byRow.get(2)).toBe(515); // 참가 — 당시 레벨
+    // m2 는 미참가 → 현재 synchro(600) fallback 금지, 업데이트 없음(빈 셀)
+    expect(byRow.has(3)).toBe(false);
+    expect(plan.memberSyncroUpdates).toHaveLength(1);
     expect(plan.raidStatsRange).toBe("레이드 통계!A101:P101");
     expect(plan.raidNum).toBe("40");
   });
@@ -183,7 +188,7 @@ describe("prepareRoundBatchUpdate — 회차 당시 레벨 우선", () => {
       alerts: [],
       raidNum: "40",
       raidRows: [row("40차", "A", "boss")],
-      roundSyncroLevels: {},
+      roundSyncroLevels: { m1: 515, m2: 520 }, // 둘 다 참가
       members,
       lastRaidRow: 100,
       syncroColumn: "H",
@@ -210,5 +215,35 @@ describe("prepareRoundBatchUpdate — 회차 당시 레벨 우선", () => {
     });
     expect(plan.memberSyncroUpdates).toHaveLength(0);
     expect(plan.raidStatsRows).toHaveLength(1);
+  });
+});
+
+describe("calculateMemberSyncroUpdates — 미참가 회차 레벨 기록 방지 (가입 전 레벨 버그 회귀)", () => {
+  const staying = (members: GuildMember[]): SyncClassification => ({
+    staying: members.map((m, i) => ({
+      member_id: m.member_id,
+      sheetRow: i + 2,
+      nickname: m.nickname,
+      payloadNickname: m.nickname,
+    })),
+    leaving: [],
+    joining: [],
+  });
+
+  it("roundSyncroLevels 제공 시: 미참가 멤버는 현재 synchro fallback 없이 skip", () => {
+    const ms = [member("m1", "A", 540), member("m2", "B", 600)];
+    // m1 만 그 회차 참가(515). m2 는 미참가(가입 전 등) → roundSyncroLevels 부재.
+    const updates = calculateMemberSyncroUpdates(staying(ms), ms, "H", { m1: 515 });
+    expect(updates).toEqual([{ sheetRow: 2, syncroLevel: 515, column: "H" }]);
+    // m2(row3) 는 포함되지 않아야 함 — 빈 셀
+    expect(updates.some((u) => u.sheetRow === 3)).toBe(false);
+  });
+
+  it("roundSyncroLevels 미제공(레거시 단일 회차): staying 멤버는 현재 synchro fallback", () => {
+    const ms = [member("m1", "A", 540), member("m2", "B", 600)];
+    const updates = calculateMemberSyncroUpdates(staying(ms), ms, "H");
+    const byRow = new Map(updates.map((u) => [u.sheetRow, u.syncroLevel]));
+    expect(byRow.get(2)).toBe(540);
+    expect(byRow.get(3)).toBe(600);
   });
 });

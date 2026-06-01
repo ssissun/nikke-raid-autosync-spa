@@ -63,10 +63,15 @@ export function calculateMemberSyncroUpdates(
   const memberById = new Map<string, GuildMember>();
   for (const m of members) memberById.set(m.member_id, m);
 
-  // 회차 당시 레벨 우선, 없으면 현재 synchro_level fallback.
+  // 레벨 결정:
+  //  - roundSyncroLevels 제공(회차별 raid-time): 그 회차 참가자만 당시 레벨 기록.
+  //    미참가자(가입 전 포함)는 현재 synchro 로 fallback 하지 않고 0(=빈 셀) — 미참가 회차에 레벨 기록 방지.
+  //  - roundSyncroLevels 미제공(레거시 단일 회차): 현재 synchro_level fallback.
   const levelFor = (memberId: string): number => {
-    const round = roundSyncroLevels?.[memberId];
-    if (round !== undefined && round > 0) return round;
+    if (roundSyncroLevels !== undefined) {
+      const round = roundSyncroLevels[memberId];
+      return round !== undefined && round > 0 ? round : 0;
+    }
     return memberById.get(memberId)?.synchro_level ?? 0;
   };
 
