@@ -970,9 +970,11 @@ async function applyAllChanges(): Promise<void> {
       }
     }
 
-    // 5) 미참여 멤버 — 최신(max) 회차 기준
-    const latestNum = writtenRaidNums
-      .map((n) => Number(n))
+    // 5) 미참여 멤버 — 진짜 최신 회차 기준 (payload 가 본 가장 최근 회차 = 현재 회차).
+    //    이번에 쓴 회차(writtenRaidNums)가 아니라 payload 전체의 max 회차를 사용해야
+    //    "36·38·39 만 썼는데 40차 가입 멤버가 미참여로 뜨는" 오판을 막는다.
+    const latestNum = normalized.rounds
+      .map((r) => Number(r.raidNum))
       .reduce((a, b) => Math.max(a, b), 0)
       .toString();
     const latestRound = normalized.rounds.find((r) => r.raidNum === latestNum);
@@ -1188,11 +1190,18 @@ function renderApp(): void {
             <summary>회차별 상세 (${preview.rounds.length}개)</summary>
             <ul class="changes">
               ${preview.rounds.map((r) => {
-                const tabs = [
+                const tabItems = [
                   r.missingStats ? `레이드 통계 +${r.raidStatsRowsCount}행` : null,
                   r.missingMember ? "유니온 멤버 싱크로 컬럼" : null,
-                ].filter(Boolean).join(" + ");
-                return `<li><strong>${escapeHtml(r.raidNum)}차</strong>: ${escapeHtml(tabs)} · 보스 ${r.bossNames.length}종 (${r.bossNames.map((b) => escapeHtml(b)).join(" · ")})</li>`;
+                ].filter((x): x is string => x !== null);
+                return `<li><strong>${escapeHtml(r.raidNum)}차</strong>
+                  <ul>
+                    ${tabItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+                    <li>보스 ${r.bossNames.length}종
+                      <ul>${r.bossNames.map((b) => `<li>${escapeHtml(b)}</li>`).join("")}</ul>
+                    </li>
+                  </ul>
+                </li>`;
               }).join("")}
             </ul>
           </details>
