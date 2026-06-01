@@ -227,9 +227,8 @@ export async function createBackupTab(
   accessToken: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<string> {
-  // 충돌하지 않는 이름을 기존 탭 목록에서 먼저 결정 (locale 무관).
-  // Google 의 "이미 존재" 에러 메시지는 사용자 locale(ko/en/…)에 따라 달라
-  // 메시지 파싱 기반 판정은 불안정 (ko="이미 있습니다" 미스매치 → 적용 중단 버그) — 사전 조회로 회피.
+  // 충돌하지 않는 이름을 기존 탭 목록에서 먼저 결정 — locale 무관.
+  // (Google 의 "이미 존재" 에러 메시지는 locale 마다 달라 메시지 파싱으로 판정하지 않는다.)
   const takenTitles = new Set(
     (await listAllSheets(spreadsheetId, accessToken, fetchImpl)).map((s) => s.title)
   );

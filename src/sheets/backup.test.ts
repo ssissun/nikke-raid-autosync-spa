@@ -79,7 +79,7 @@ describe("buildBackupValues", () => {
   });
 });
 
-describe("createBackupTab — locale-무관 이름 충돌 회피 (ko '이미 있습니다' 버그 회귀 방지)", () => {
+describe("createBackupTab — locale 무관 이름 충돌 회피", () => {
   it("충돌 없으면 _backup_{N}", async () => {
     const { fetchImpl, addedTitles } = makeFetch([]);
     const name = await createBackupTab("sid", "40", "tok", fetchImpl);

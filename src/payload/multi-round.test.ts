@@ -218,7 +218,7 @@ describe("prepareRoundBatchUpdate — 회차 당시 레벨 우선", () => {
   });
 });
 
-describe("calculateMemberSyncroUpdates — 미참가 회차 레벨 기록 방지 (가입 전 레벨 버그 회귀)", () => {
+describe("calculateMemberSyncroUpdates — 미참가 회차는 레벨 기록 안 함", () => {
   const staying = (members: GuildMember[]): SyncClassification => ({
     staying: members.map((m, i) => ({
       member_id: m.member_id,

@@ -970,9 +970,7 @@ async function applyAllChanges(): Promise<void> {
       }
     }
 
-    // 5) 미참여 멤버 — 진짜 최신 회차 기준 (payload 가 본 가장 최근 회차 = 현재 회차).
-    //    이번에 쓴 회차(writtenRaidNums)가 아니라 payload 전체의 max 회차를 사용해야
-    //    "36·38·39 만 썼는데 40차 가입 멤버가 미참여로 뜨는" 오판을 막는다.
+    // 5) 미참여 멤버 — payload 의 최신 회차(현재 회차) 참가자 기준.
     const latestNum = normalized.rounds
       .map((r) => Number(r.raidNum))
       .reduce((a, b) => Math.max(a, b), 0)

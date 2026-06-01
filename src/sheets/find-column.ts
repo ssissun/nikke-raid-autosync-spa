@@ -132,7 +132,7 @@ export interface RaidColumnResolution {
 const RAID_NUM_HEADER_PATTERN = /^(\d+|OO)차$/;
 
 /**
- * 기존 동작 유지 — 정확 일치 또는 OO차 placeholder 매칭. 둘 다 부재면 null.
+ * 정확 일치 또는 OO차 placeholder 매칭. 둘 다 부재면 null.
  */
 export async function findRaidColumn(
   spreadsheetId: string,
@@ -285,7 +285,7 @@ export async function ensureRaidColumn(
     return { column: newCol, isNew: true, isPlaceholder: false };
   }
 
-  // 3b) 더 큰 회차 없음 → 마지막 컬럼 +1 에 append (기존 동작 + 스타일 복사)
+  // 3b) 더 큰 회차 없음 → 마지막 컬럼 +1 에 append (스타일 복사)
   const newIdx = lastFilledIdx + 1;
   const newCol = columnNumberToLetter(offset + newIdx);
   await writeColumnHeader(spreadsheetId, newCol, raidNum, accessToken, fetchImpl);
