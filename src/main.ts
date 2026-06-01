@@ -1366,19 +1366,20 @@ function renderApp(): void {
 
   const versionWarningBlock =
     userscriptDetected && detectedUserscriptVersion !== EXPECTED_USERSCRIPT_VERSION
-      ? `<section class="us-version-warn" role="alert">
-          <p>⚠️ <strong>유저스크립트 업그레이드 권장</strong> — 설치된 버전: <strong>${detectedUserscriptVersion !== null ? escapeHtml("v" + detectedUserscriptVersion) : "구버전 (버전 미보고)"}</strong> · 권장: <strong>v${EXPECTED_USERSCRIPT_VERSION}</strong></p>
-          <p class="meta"><a href="https://greasyfork.org/scripts/579278" target="_blank" rel="noopener noreferrer">Greasyfork에서 업그레이드</a> 후 Tampermonkey에서 재import(또는 자동 업데이트)하면 최신 기능·버그 수정이 적용됩니다.</p>
-        </section>`
+      ? `<div class="us-version-floater" role="alert">
+          <p class="uvf-title">⚠️ 유저스크립트 업그레이드 권장</p>
+          <p>설치됨: <strong>${detectedUserscriptVersion !== null ? escapeHtml("v" + detectedUserscriptVersion) : "구버전 (미보고)"}</strong> · 권장: <strong>v${EXPECTED_USERSCRIPT_VERSION}</strong></p>
+          <p><a href="https://greasyfork.org/scripts/579278" target="_blank" rel="noopener noreferrer">Greasyfork에서 업그레이드 →</a></p>
+        </div>`
       : "";
 
   app.innerHTML = `
+    ${versionWarningBlock}
     <header>
       <h1>NIKKE 유레 자동 동기화 도구</h1>
       <p class="meta">레이드 결과 + 멤버 싱크로 레벨을 본인 시트 사본에 자동 입력</p>
     </header>
     <main>
-      ${versionWarningBlock}
       <section class="auth">${authBlock}</section>
       ${sheetBlock !== "" ? `<section class="sheet">${sheetBlock}</section>` : ""}
       ${diagBlock !== "" ? `<section class="diagnostic">${diagBlock}</section>` : ""}
