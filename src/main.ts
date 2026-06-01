@@ -270,18 +270,21 @@ async function diagnoseSheet(): Promise<SheetDiagnostic | null> {
   }
 }
 
-// 시트의 최대 기존 회차 — userscript 백필 시작점(from) 계산용. autoDiagnose 시 캐시.
+// 시트 기존 회차 집합 — userscript 백필 핸드셰이크(from + need) 계산용. autoDiagnose 시 캐시.
+let lastExistingRounds: Set<string> = new Set();
 let lastMaxExistingRound: number | null = null;
 
 async function refreshExistingRounds(): Promise<void> {
   const token = getAccessToken();
   const sheetId = getSheetId();
   if (token === null || sheetId === null) {
+    lastExistingRounds = new Set();
     lastMaxExistingRound = null;
     return;
   }
   try {
     const existing = await readExistingRaidNums(sheetId, token);
+    lastExistingRounds = existing;
     let max = 0;
     for (const n of existing) {
       const v = Number(n);
@@ -290,8 +293,26 @@ async function refreshExistingRounds(): Promise<void> {
     lastMaxExistingRound = max > 0 ? max : null;
   } catch (e) {
     console.warn("[NRA-SPA] readExistingRaidNums 실패:", e);
+    lastExistingRounds = new Set();
     lastMaxExistingRound = null;
   }
+}
+
+// interior gap — 시트 기존 회차 범위 [min,max] 안에서 빠진 회차 (오름차순).
+// 최근 MAX_GAP_NEED 개로 제한 (블라가 과거 회차 미제공 → 오래된 gap 은 어차피 빈 응답).
+const MAX_GAP_NEED = 15;
+function computeInteriorGaps(existing: ReadonlySet<string>): number[] {
+  const nums = [...existing].map(Number).filter((n) => Number.isFinite(n) && n > 0);
+  if (nums.length < 2) return [];
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const present = new Set(nums);
+  const gaps: number[] = [];
+  for (let r = min + 1; r < max; r++) {
+    if (!present.has(r)) gaps.push(r);
+  }
+  // 최근(높은) gap 우선 — 블라 제공 한도 내에서만 의미
+  return gaps.slice(-MAX_GAP_NEED);
 }
 
 async function autoDiagnose(): Promise<void> {
@@ -427,15 +448,19 @@ async function listSheetTabs(): Promise<string[]> {
 // window.opener.postMessage로 본 SPA에 payload 전달.
 function openBlablalinkRaidPage(): void {
   // ?nra=1 — userscript SPA-only trigger 식별자
-  // &from={n} — 다회차 백필 시작 회차 (시트 max 기존 회차 + 1). userscript 가 from~현재 수집.
+  // &from={n} — tail 백필 시작 회차 (시트 max 기존 회차 + 1). userscript 가 from~현재 수집.
   //   시트가 비었으면 from 생략 → userscript 가 가용한 과거 회차까지 백필.
+  // &need={a,b} — interior gap 회차 (시트 기존 범위 안에서 빠진 회차). gap-aware 백필.
+  //   둘 다 블라 제공 한도 내에서만 동작 (빈 응답 회차는 userscript 가 자동 skip).
   const fromRound =
     lastMaxExistingRound !== null && lastMaxExistingRound > 0
       ? lastMaxExistingRound + 1
       : null;
+  const gaps = computeInteriorGaps(lastExistingRounds);
   const fromParam = fromRound !== null ? `&from=${fromRound}` : "";
+  const needParam = gaps.length > 0 ? `&need=${gaps.join(",")}` : "";
   const w = window.open(
-    `https://www.blablalink.com/shiftyspad/union-raid?lang=ko&nra=1${fromParam}`,
+    `https://www.blablalink.com/shiftyspad/union-raid?lang=ko&nra=1${fromParam}${needParam}`,
     "blablalink-union-raid"
   );
   if (w === null) {
