@@ -8,7 +8,7 @@ import {
 } from "./algorithm";
 import { readColBMap, type ReadColBMapResult } from "./col-b-reader";
 import { detectMigrationMode, type MigrationMode } from "./migration";
-import { readMemberIdTab } from "../sheets/member-id-tab";
+import { readMemberIdTab, resolveColBMap } from "../sheets/member-id-tab";
 import type { NicknameChange, SyncClassification } from "./types";
 
 export const MIGRATION_BLOCKED = "MIGRATION_BLOCKED";
@@ -105,7 +105,9 @@ export async function startClassificationFlow(
   let allColBEmpty = sheetRead.allColBEmpty;
   if (sheetRead.layout === "pre-migration") {
     const tab = await readMemberIdTab(sheetId, accessToken);
-    for (const [row, memberId] of tab.memberIdByRow.entries()) {
+    // 행 정렬 우선 + 닉네임 검증/복구 (탭 닉네임 == 시트 닉네임이면 행 신뢰, 틀어지면 닉네임 복구)
+    const resolved = resolveColBMap(tab.byRow, sheetRead.colCNicknames);
+    for (const [memberId, row] of resolved.entries()) {
       sheetRead.colBMap.set(memberId, row);
     }
     allColBEmpty = sheetRead.colBMap.size === 0;

@@ -36,9 +36,9 @@ describe("applyMemberSync (원본 레이아웃 + member_id 병렬 shift)", () =>
       { fetchImpl, initialMemberIdByRow: new Map([[2, "ida"], [3, "idb"], [4, "idc"]]) }
     );
     // B(idb) 제거, C 가 row3 으로 올라옴
-    expect(r.finalMemberIdByRow.get(2)).toBe("ida");
-    expect(r.finalMemberIdByRow.get(3)).toBe("idc");
-    expect(r.finalMemberIdByRow.has(4)).toBe(false);
+    expect(r.finalMappingByRow.get(2)?.member_id).toBe("ida");
+    expect(r.finalMappingByRow.get(3)?.member_id).toBe("idc");
+    expect(r.finalMappingByRow.has(4)).toBe(false);
     const w = getWritten()!;
     expect(w[1][1]).toBe("A"); // row2 닉네임 (Col B)
     expect(w[2][1]).toBe("C"); // row3 닉네임 (shift)
@@ -46,7 +46,7 @@ describe("applyMemberSync (원본 레이아웃 + member_id 병렬 shift)", () =>
     expect(w[2][0]).toBe("2");
   });
 
-  it("member_id 가 닉네임과 같은 행에 정렬 유지 (데이터 무결성 핵심)", async () => {
+  it("member_id ↔ 닉네임 동일 행 정렬 유지 (데이터 무결성 핵심)", async () => {
     const rows = [HEADER, ["1", "A", "500"], ["2", "B", "510"], ["3", "C", "520"]];
     const { fetchImpl, getWritten } = makeFetch(rows);
     const r = await applyMemberSync(
@@ -57,7 +57,7 @@ describe("applyMemberSync (원본 레이아웃 + member_id 병렬 shift)", () =>
     const w = getWritten()!;
     // row3 = 닉네임 C ↔ member_id idc (둘 다 한 칸 위로 동행)
     expect(w[2][1]).toBe("C");
-    expect(r.finalMemberIdByRow.get(3)).toBe("idc");
+    expect(r.finalMappingByRow.get(3)).toEqual({ nickname: "C", member_id: "idc" });
   });
 
   it("leaving + joining — 빈 슬롯에 신규 채움 + member_id 기록", async () => {
@@ -68,9 +68,9 @@ describe("applyMemberSync (원본 레이아웃 + member_id 병렬 shift)", () =>
       [{ nickname: "B", sheetRow: 3 }], [gm("idd", "D")],
       { fetchImpl, initialMemberIdByRow: new Map([[2, "ida"], [3, "idb"], [4, "idc"]]) }
     );
-    expect(r.finalMemberIdByRow.get(2)).toBe("ida");
-    expect(r.finalMemberIdByRow.get(3)).toBe("idc");
-    expect(r.finalMemberIdByRow.get(4)).toBe("idd"); // 신규 D → 빈 슬롯(row4)
+    expect(r.finalMappingByRow.get(2)?.member_id).toBe("ida");
+    expect(r.finalMappingByRow.get(3)?.member_id).toBe("idc");
+    expect(r.finalMappingByRow.get(4)).toEqual({ nickname: "D", member_id: "idd" }); // 신규
     expect(r.addedRows[0]).toEqual({ sheetRow: 4, nickname: "D", member_id: "idd" });
   });
 
@@ -88,10 +88,30 @@ describe("applyMemberSync (원본 레이아웃 + member_id 병렬 shift)", () =>
       }
     );
     // A, C 제거 → B, D 잔류 (row2, row3)
-    expect(r.finalMemberIdByRow.get(2)).toBe("idb");
-    expect(r.finalMemberIdByRow.get(3)).toBe("idd");
-    expect([...r.finalMemberIdByRow.values()]).not.toContain("ida");
-    expect([...r.finalMemberIdByRow.values()]).not.toContain("idc");
+    expect(r.finalMappingByRow.get(2)?.member_id).toBe("idb");
+    expect(r.finalMappingByRow.get(3)?.member_id).toBe("idd");
+    const ids = [...r.finalMappingByRow.values()].map((e) => e.member_id);
+    expect(ids).not.toContain("ida");
+    expect(ids).not.toContain("idc");
+  });
+
+  it("닉네임 변경(member_id 동일·닉 상이) → 시트 + 매핑 양쪽 새 닉네임", async () => {
+    const rows = [HEADER, ["1", "A", "500"], ["2", "B", "510"]];
+    const { fetchImpl, getWritten } = makeFetch(rows);
+    const r = await applyMemberSync(
+      "s", "t",
+      [], [],
+      {
+        fetchImpl,
+        initialMemberIdByRow: new Map([[2, "ida"], [3, "idb"]]),
+        nicknameChanges: [{ member_id: "ida", sheetRow: 2, old: "A", new: "A2" }],
+      }
+    );
+    const w = getWritten()!;
+    expect(w[1][1]).toBe("A2"); // 시트 row2 닉네임 갱신
+    // 매핑도 새 닉네임 + 동일 member_id
+    expect(r.finalMappingByRow.get(2)).toEqual({ nickname: "A2", member_id: "ida" });
+    expect(r.finalMappingByRow.get(3)).toEqual({ nickname: "B", member_id: "idb" });
   });
 
   it("joining 정원(32) 초과 → throw", async () => {

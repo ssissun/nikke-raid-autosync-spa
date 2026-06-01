@@ -691,10 +691,10 @@ async function autoSyncMembers(): Promise<void> {
       token,
       classResult.unmatchedSheetNicknames,
       classResult.unmatchedPayloadMembers,
-      { initialMemberIdByRow }
+      { initialMemberIdByRow, nicknameChanges: classResult.nicknameChanges }
     );
     console.info("[NRA-SPA] auto-sync 완료", lastAutoSync);
-    await writeMemberIdTab(sheetId, token, lastAutoSync.finalMemberIdByRow);
+    await writeMemberIdTab(sheetId, token, lastAutoSync.finalMappingByRow);
     // 시트 변경 후 재진단 + 재매칭
     await autoDiagnose();
     await runMatching();
@@ -955,10 +955,12 @@ async function applyAllChanges(): Promise<void> {
     for (const l of classResult.classification.leaving)
       initialMemberIdByRow.set(l.sheetRow, l.member_id);
 
-    if (
+    const hasMemberChanges =
       classResult.unmatchedSheetNicknames.length > 0 ||
-      classResult.unmatchedPayloadMembers.length > 0
-    ) {
+      classResult.unmatchedPayloadMembers.length > 0;
+    const hasRenames = classResult.nicknameChanges.length > 0;
+
+    if (hasMemberChanges || hasRenames) {
       // 경로 2: 탈퇴 멤버 누적 레벨을 탈퇴자 탭으로 이전 — auto-sync 제거 전 (실패 시 throw → 데이터 보호)
       if (dropoutTabPresent && classResult.unmatchedSheetNicknames.length > 0) {
         await moveLeavingLevelsToDropout(
@@ -967,22 +969,26 @@ async function applyAllChanges(): Promise<void> {
           classResult.unmatchedSheetNicknames
         );
       }
+      // 탈퇴 제거 + 신규 추가 + 닉네임 변경(member_id 동일·닉 상이) 적용. member_id 병렬 추적.
       lastAutoSync = await applyMemberSync(
         sheetId,
         token,
         classResult.unmatchedSheetNicknames,
         classResult.unmatchedPayloadMembers,
-        { initialMemberIdByRow }
+        { initialMemberIdByRow, nicknameChanges: classResult.nicknameChanges }
       );
       console.info("[NRA-SPA] auto-sync 완료", lastAutoSync);
-      // member_id 매핑 탭을 shift 반영 최종 스냅샷으로 갱신 (재매칭 전에 기록 → 탭/시트 행 정렬 유지)
-      await writeMemberIdTab(sheetId, token, lastAutoSync.finalMemberIdByRow);
+      // member_id 매핑 탭을 shift·닉네임 반영 최종 스냅샷으로 갱신 (재매칭 전에 기록 → 행 정렬 유지)
+      await writeMemberIdTab(sheetId, token, lastAutoSync.finalMappingByRow);
       await diagnoseSheet();
       clearSyncClassification();
       await startClassificationFlow(token, sheetId, normalized.members);
     } else {
-      // 멤버 변동 없음 — 현재 매핑을 탭에 기록 (첫 실행 시 탭 생성 / 멱등 갱신)
-      await writeMemberIdTab(sheetId, token, initialMemberIdByRow);
+      // 멤버/닉네임 변동 없음 — 현재 매핑을 탭에 기록 (첫 실행 시 탭 생성 / 멱등 갱신)
+      const mapping = new Map<number, { nickname: string; member_id: string }>();
+      for (const s of classResult.classification.staying)
+        mapping.set(s.sheetRow, { nickname: s.nickname, member_id: s.member_id });
+      await writeMemberIdTab(sheetId, token, mapping);
     }
 
     const refreshedClass = getSyncClassification();

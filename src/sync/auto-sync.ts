@@ -1,19 +1,21 @@
 // F-NRA-002-08 자동 멤버 sync — data shift 방식 (원본 레이아웃: Col B = 닉네임).
 // member_id 는 유니온 멤버에 저장하지 않고 _nra_member_mapping 탭에 별도 보관하므로,
 // 여기서는 닉네임/회차만 shift 하고 member_id 는 병렬 배열로 함께 추적하여 최종 매핑을 반환한다.
-// (호출부가 finalMemberIdByRow 를 매핑 탭에 기록.)
+// (호출부가 finalMappingByRow 를 매핑 탭에 기록.)
 //
 // 동작:
 //   1) 시트 전체 read (헤더 + 데이터 32 row)
+//   1.5) 닉네임 변경(member_id 동일·닉 상이) 적용 — Col B 닉네임 갱신
 //   2) leaving sheetRows 를 큰 순서부터 처리 — 데이터(Col B~)를 한 칸 위로 shift (member_id 병렬 shift)
 //   3) joining 을 빈 닉네임 슬롯(위에서부터)에 채움 (member_id 병렬 기록)
 //   4) Col A 가입순서 1..N normalize
 //   5) 시트 write
-//   6) 최종 {sheetRow → member_id} 반환
+//   6) 최종 {sheetRow → {nickname, member_id}} 반환
 
 import type { GuildMember } from "../types";
-import type { UnmatchedSheetNickname } from "../matching";
+import type { UnmatchedSheetNickname, NicknameChange } from "../matching";
 import { columnNumberToLetter } from "../sheets/find-column";
+import type { MemberMapEntry } from "../sheets/member-id-tab";
 
 const UNION_MEMBER_SHEET = "유니온 멤버";
 // 회차 컬럼은 Col C 부터 우측 누적 — Z(24회차) 초과분도 shift 대상에 포함되도록 넓게 읽는다.
@@ -25,6 +27,8 @@ export interface AutoSyncOptions {
   fetchImpl?: typeof fetch;
   /** 현재 {sheetRow → member_id} (매핑 탭/분류 결과). shift 에 함께 실어 최종 매핑 산출. */
   initialMemberIdByRow?: ReadonlyMap<number, string>;
+  /** staying 멤버 닉네임 변경(member_id 동일·닉네임 상이) — 시트 Col B 닉네임을 새 값으로 갱신. */
+  nicknameChanges?: readonly NicknameChange[];
 }
 
 export interface AutoSyncResult {
@@ -32,8 +36,8 @@ export interface AutoSyncResult {
   addedRows: Array<{ sheetRow: number; nickname: string; member_id: string }>;
   emptySlotsBefore: number;
   emptySlotsAfter: number;
-  /** shift/append 반영된 최종 {sheetRow → member_id} — 매핑 탭 기록용 */
-  finalMemberIdByRow: Map<number, string>;
+  /** shift/append 반영된 최종 {sheetRow → {nickname, member_id}} — 매핑 탭 기록용 */
+  finalMappingByRow: Map<number, MemberMapEntry>;
 }
 
 interface ValueRangeResponse {
@@ -200,6 +204,15 @@ export async function applyMemberSync(
     (_, i) => initialMemberIdByRow.get(i + 2) ?? ""
   );
 
+  // 1.5) 닉네임 변경 적용 (member_id 동일·닉네임 상이) — shift 전 원래 행 Col B 에 새 닉네임.
+  //      member_id 는 그대로 → 매핑 탭/시트 양쪽 닉네임이 함께 갱신됨.
+  for (const c of options.nicknameChanges ?? []) {
+    const idx = c.sheetRow - 2;
+    if (idx >= 0 && idx < dataRows.length && dataRows[idx] !== undefined && c.new.length > 0) {
+      dataRows[idx][NICKNAME_COL_IDX] = c.new;
+    }
+  }
+
   const emptySlotsBefore = countEmptyNicknames(dataRows);
 
   // 2) leaving — data shift up (큰 sheetRow 부터)
@@ -220,11 +233,16 @@ export async function applyMemberSync(
   const writeValues: string[][] = [header, ...dataRows];
   await writeMemberRows(spreadsheetId, writeValues, accessToken, fetchImpl);
 
-  // 6) 최종 {sheetRow → member_id}
-  const finalMemberIdByRow = new Map<number, string>();
+  // 6) 최종 {sheetRow → {nickname, member_id}}
+  const finalMappingByRow = new Map<number, MemberMapEntry>();
   for (let i = 0; i < memberIds.length; i++) {
     const id = (memberIds[i] ?? "").trim();
-    if (id.length > 0) finalMemberIdByRow.set(i + 2, id);
+    if (id.length > 0) {
+      finalMappingByRow.set(i + 2, {
+        nickname: (dataRows[i]?.[NICKNAME_COL_IDX] ?? "").trim(),
+        member_id: id,
+      });
+    }
   }
 
   const addedRows = joiningMembers.map((m, i) => ({
@@ -238,6 +256,6 @@ export async function applyMemberSync(
     addedRows,
     emptySlotsBefore,
     emptySlotsAfter,
-    finalMemberIdByRow,
+    finalMappingByRow,
   };
 }
