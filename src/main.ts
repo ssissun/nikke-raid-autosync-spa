@@ -903,6 +903,11 @@ async function applyAllChanges(): Promise<void> {
     // 3) 회차 루프 (오름차순) — 탭별 차수 순서 위치 삽입.
     //    missingMember: ensureRaidColumn(차수 위치 컬럼 삽입) + 싱크로 값 쓰기 (executeBatchUpdate 멤버 전용)
     //    missingStats:  insertStatsRowsOrdered(차수 위치 행 블록 삽입)
+    // 최신(현재) 회차 — 미참가 멤버에게 현재 synchro 를 기록할 회차 + 미참여 판정 기준.
+    const latestRoundNum = normalized.rounds
+      .map((r) => Number(r.raidNum))
+      .reduce((a, b) => Math.max(a, b), 0)
+      .toString();
     const writtenRaidNums: string[] = [];
     for (const target of lastTargets) {
       const raidNum = target.round.raidNum;
@@ -933,6 +938,7 @@ async function applyAllChanges(): Promise<void> {
           syncroColumn: resolution.column,
           includeStats: false,
           includeMember: true,
+          currentSynchroFallback: raidNum === latestRoundNum,
         });
         if (plan.memberSyncroUpdates.length > 0) {
           await executeBatchUpdate(sheetId, plan, token, {
@@ -966,11 +972,7 @@ async function applyAllChanges(): Promise<void> {
     }
 
     // 5) 미참여 멤버 — payload 의 최신 회차(현재 회차) 참가자 기준.
-    const latestNum = normalized.rounds
-      .map((r) => Number(r.raidNum))
-      .reduce((a, b) => Math.max(a, b), 0)
-      .toString();
-    const latestRound = normalized.rounds.find((r) => r.raidNum === latestNum);
+    const latestRound = normalized.rounds.find((r) => r.raidNum === latestRoundNum);
     if (latestRound) {
       const participating = new Set<string>();
       for (const row of latestRound.raid) {
@@ -1167,7 +1169,6 @@ function renderApp(): void {
           <ul class="changes">
             ${preview.targetRaidNums.length > 0 ? `<li><strong>처리할 회차</strong> (${preview.targetRaidNums.length}개): ${preview.targetRaidNums.map((n) => escapeHtml(n) + "차").join(" · ")}</li>` : ""}
             ${preview.resultGapRounds.length > 0 ? `<li><strong>레이드 결과 행 추가</strong>: ${preview.resultGapRounds.map((n) => escapeHtml(n) + "차").join(", ")}</li>` : ""}
-            ${preview.alreadyInSheet.length > 0 ? `<li><strong>이미 시트에 있어 skip</strong>: ${preview.alreadyInSheet.map((n) => escapeHtml(n) + "차").join(", ")}</li>` : ""}
             ${preview.unavailableButRequested.length > 0 ? `<li class="status--warn"><strong>데이터 없는 회차</strong>: ${preview.unavailableButRequested.map((n) => escapeHtml(n) + "차").join(", ")}</li>` : ""}
             <li><strong>레이드 통계 신규 행</strong>: 총 ${totalNewRows}행</li>
             <li><strong>탈퇴 멤버</strong> (${preview.leavingNicknames.length}명)${preview.leavingNicknames.length > 0 ? `: ${preview.leavingNicknames.map((n) => escapeHtml(n)).join(", ")}` : ""}</li>
@@ -1190,9 +1191,7 @@ function renderApp(): void {
                 return `<li><strong>${escapeHtml(r.raidNum)}차</strong>
                   <ul>
                     ${tabItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
-                    <li>보스 ${r.bossNames.length}종
-                      <ul>${r.bossNames.map((b) => `<li>${escapeHtml(b)}</li>`).join("")}</ul>
-                    </li>
+                    <li>보스 ${r.bossNames.length}종 (회차 보스 조합 확인용): ${r.bossNames.map((b) => escapeHtml(b)).join(", ")}</li>
                   </ul>
                 </li>`;
               }).join("")}

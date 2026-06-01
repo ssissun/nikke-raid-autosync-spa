@@ -246,4 +246,13 @@ describe("calculateMemberSyncroUpdates — 미참가 회차는 레벨 기록 안
     expect(byRow.get(2)).toBe(540);
     expect(byRow.get(3)).toBe(600);
   });
+
+  it("currentSynchroFallback=true(현재 회차): 미참가 멤버도 현재 synchro 로 기록", () => {
+    const ms = [member("m1", "A", 540), member("m2", "B", 600)];
+    // m1 참가(515) → 당시 레벨. m2 미참가 → 현재 회차이므로 현재 synchro(600).
+    const updates = calculateMemberSyncroUpdates(staying(ms), ms, "H", { m1: 515 }, true);
+    const byRow = new Map(updates.map((u) => [u.sheetRow, u.syncroLevel]));
+    expect(byRow.get(2)).toBe(515);
+    expect(byRow.get(3)).toBe(600);
+  });
 });

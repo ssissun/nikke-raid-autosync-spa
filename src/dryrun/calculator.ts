@@ -58,19 +58,24 @@ export function calculateMemberSyncroUpdates(
   classification: SyncClassification,
   members: readonly GuildMember[],
   syncroColumn: string,
-  roundSyncroLevels?: Record<string, number>
+  roundSyncroLevels?: Record<string, number>,
+  currentSynchroFallback = false
 ): MemberSyncroUpdate[] {
   const memberById = new Map<string, GuildMember>();
   for (const m of members) memberById.set(m.member_id, m);
 
   // 레벨 결정:
-  //  - roundSyncroLevels 제공(회차별 raid-time): 그 회차 참가자만 당시 레벨 기록.
-  //    미참가자(가입 전 포함)는 현재 synchro 로 fallback 하지 않고 0(=빈 셀) — 미참가 회차에 레벨 기록 방지.
+  //  - roundSyncroLevels 제공(회차별 raid-time): 그 회차 참가자는 당시 레벨 기록.
+  //    미참가자는 현재 회차(currentSynchroFallback=true)면 현재 synchro 로 기록,
+  //    과거 회차면 0(=빈 셀)로 두어 가입 전/미참가 회차에 레벨이 찍히지 않게 한다.
   //  - roundSyncroLevels 미제공(레거시 단일 회차): 현재 synchro_level fallback.
   const levelFor = (memberId: string): number => {
     if (roundSyncroLevels !== undefined) {
       const round = roundSyncroLevels[memberId];
-      return round !== undefined && round > 0 ? round : 0;
+      if (round !== undefined && round > 0) return round;
+      return currentSynchroFallback
+        ? (memberById.get(memberId)?.synchro_level ?? 0)
+        : 0;
     }
     return memberById.get(memberId)?.synchro_level ?? 0;
   };
@@ -163,6 +168,8 @@ export interface PrepareRoundArgs {
   // 탭별 누락 판정 — 해당 탭에 누락된 경우만 채움(멱등). 미지정 시 둘 다 true(레거시 동작).
   includeStats?: boolean; // 레이드 통계 행 추가
   includeMember?: boolean; // 유니온 멤버 싱크로 컬럼 채움
+  // 현재(최신) 회차면 true — 미참가 멤버도 현재 synchro 로 기록. 과거 회차는 false(빈 셀).
+  currentSynchroFallback?: boolean;
 }
 
 /**
@@ -179,7 +186,8 @@ export function prepareRoundBatchUpdate(args: PrepareRoundArgs): BatchUpdatePlan
         args.classification,
         args.members,
         args.syncroColumn,
-        args.roundSyncroLevels
+        args.roundSyncroLevels,
+        args.currentSynchroFallback ?? false
       )
     : [];
 
