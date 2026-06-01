@@ -1223,7 +1223,7 @@ function renderApp(): void {
                    nonParticipatingNicknames !== null
                      ? nonParticipatingNicknames.length > 0
                        ? `<p class="status status--warn">⚠️ 최신 회차 미참여 멤버 (${nonParticipatingNicknames.length}명): ${nonParticipatingNicknames.map((n) => escapeHtml(n)).join(", ")}</p>`
-                       : `<p class="status status--ok">🎉 모든 멤버 참여 완료 — 미참여자 0명</p>`
+                       : `<p class="status status--ok">🎉 최신 회차 모든 멤버 참여 완료 — 미참여자 0명</p>`
                      : ""
                  }`
               : ""
