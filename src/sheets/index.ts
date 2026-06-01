@@ -52,7 +52,6 @@ export async function writeRaidData(
   dispatchProgress(target, "backup", "running");
   const backupTabName = await createBackupTab(
     spreadsheetId,
-    plan.raidNum,
     accessToken,
     options.fetchImpl
   );

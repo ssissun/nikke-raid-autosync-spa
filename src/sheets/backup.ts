@@ -1,11 +1,35 @@
 // F-NRA-002-07 백업 탭 생성 + 데이터 복사 (SHEET_SCHEMA §5).
-// 1. `_backup_{회차}` 탭 생성 (중복 시 `_2`·`_3`… 증가 — 사전 조회로 locale 무관 충돌 회피)
+// 1. `_backup_{생성시각}` 탭 생성 (회차 무관, 매 실행마다 유일 → 충돌 없음)
 // 2. `유니온 멤버` + `레이드 통계` 변경 대상 영역 데이터 fetch
 // 3. backup 탭에 라벨 + 두 영역 데이터 쓰기
-// 4. 백업탭은 최대 3개만 유지 (가장 오래된 회차부터 삭제)
+// 4. 백업탭은 최근 3개만 유지 (생성 시각 기준 가장 오래된 것부터 삭제)
 
 const MAX_BACKUP_TABS = 3;
-const BACKUP_TAB_PATTERN = /^_backup_(\d+)(_\d+)?$/;
+
+// 백업탭 이름의 recency(최신도) 정렬 키. 신규 `_backup_YYYYMMDD-HHmmss` 는 항상
+// 구버전 `_backup_{회차}` 보다 최신으로 취급되어, 구버전 탭이 먼저 정리된다.
+// 백업탭이 아니면 null.
+function backupRecencyKey(title: string): string | null {
+  const ts = title.match(/^_backup_(\d{8}-\d{6})(?:_(\d+))?$/);
+  if (ts) return `1_${ts[1]}_${(ts[2] ?? "0").padStart(4, "0")}`;
+  const legacy = title.match(/^_backup_(\d+)(?:_(\d+))?$/);
+  if (legacy) {
+    return `0_${legacy[1].padStart(8, "0")}_${(legacy[2] ?? "0").padStart(4, "0")}`;
+  }
+  return null;
+}
+
+// 회차 무관 백업탭 이름/라벨 — 생성 시각 기반.
+function backupTimestamp(): { name: string; label: string } {
+  const d = new Date();
+  const p = (n: number): string => String(n).padStart(2, "0");
+  const date = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
+  const time = `${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  return {
+    name: `_backup_${date}-${time}`,
+    label: `백업 - ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`,
+  };
+}
 
 interface SheetsErrorBody {
   error?: { code?: number; status?: string; message?: string };
@@ -74,22 +98,15 @@ function padRows(rows: readonly string[][], targetCols: number): string[][] {
 }
 
 function buildBackupValues(
-  raidNum: string,
+  label: string,
   memberRows: readonly string[][],
   statsRows: readonly string[][]
 ): string[][] {
-  const timestamp = new Date()
-    .toISOString()
-    .replace("T", " ")
-    .slice(0, 16); // YYYY-MM-DD HH:MM
   // 단일 탭에 두 영역을 16-col 너비로 padding 하여 일관 표시
   const TARGET_COLS = 16;
   const lines: string[][] = [];
 
-  lines.push([
-    `${raidNum}차 backup - ${timestamp}`,
-    ...Array<string>(TARGET_COLS - 1).fill(""),
-  ]);
+  lines.push([label, ...Array<string>(TARGET_COLS - 1).fill("")]);
   lines.push(Array<string>(TARGET_COLS).fill(""));
 
   lines.push([
@@ -187,8 +204,8 @@ async function deleteSheets(
 }
 
 /**
- * 백업탭을 최신 N개만 남기고 오래된 것 삭제 (회차 번호 큰 순으로 유지).
- * `_backup_{N}` 또는 `_backup_{N}_{suffix}` 패턴만 대상. 그 외 탭은 건드리지 않음.
+ * 백업탭을 최근 N개만 남기고 오래된 것 삭제 (생성 시각 기준).
+ * `_backup_*` 패턴만 대상 (신규 시각 기반 + 구버전 회차 기반 모두). 그 외 탭은 건드리지 않음.
  */
 export async function pruneOldBackupTabs(
   spreadsheetId: string,
@@ -197,14 +214,14 @@ export async function pruneOldBackupTabs(
   keepMax: number = MAX_BACKUP_TABS
 ): Promise<{ kept: string[]; removed: string[] }> {
   const sheets = await listAllSheets(spreadsheetId, accessToken, fetchImpl);
-  const backupSheets: Array<SheetInfo & { raidNum: number }> = [];
+  const backupSheets: Array<SheetInfo & { key: string }> = [];
   for (const s of sheets) {
-    const m = s.title.match(BACKUP_TAB_PATTERN);
-    if (m === null) continue;
-    backupSheets.push({ ...s, raidNum: Number.parseInt(m[1], 10) });
+    const key = backupRecencyKey(s.title);
+    if (key === null) continue;
+    backupSheets.push({ ...s, key });
   }
-  // 큰 회차부터 정렬 → 상위 keepMax 개 유지, 나머지 삭제
-  backupSheets.sort((a, b) => b.raidNum - a.raidNum);
+  // 최신(key 큰 것)부터 정렬 → 상위 keepMax 개 유지, 나머지 삭제
+  backupSheets.sort((a, b) => b.key.localeCompare(a.key));
   const kept = backupSheets.slice(0, keepMax);
   const toRemove = backupSheets.slice(keepMax);
   if (toRemove.length > 0) {
@@ -223,24 +240,24 @@ export async function pruneOldBackupTabs(
 
 export async function createBackupTab(
   spreadsheetId: string,
-  raidNum: string,
   accessToken: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<string> {
-  // 충돌하지 않는 이름을 기존 탭 목록에서 먼저 결정 — locale 무관.
-  // (Google 의 "이미 존재" 에러 메시지는 locale 마다 달라 메시지 파싱으로 판정하지 않는다.)
+  const { name: base, label } = backupTimestamp();
+
+  // 생성 시각 기반 이름이라 매 실행마다 유일 → 충돌이 사실상 없음.
+  // 같은 초 재실행 등 드문 충돌 대비: 기존 탭 목록을 먼저 조회해 비충돌 이름 선택.
   const takenTitles = new Set(
     (await listAllSheets(spreadsheetId, accessToken, fetchImpl)).map((s) => s.title)
   );
   const pickFreeName = (): string => {
-    let name = `_backup_${raidNum}`;
-    for (let n = 2; takenTitles.has(name); n++) name = `_backup_${raidNum}_${n}`;
+    let name = base;
+    for (let n = 2; takenTitles.has(name); n++) name = `${base}_${n}`;
     return name;
   };
 
-  // 사전 조회로 충돌을 피하지만, API eventual-consistency/동시 실행으로 여전히
-  // 400(중복)이 날 수 있어 HTTP status 기준(메시지 파싱 X → locale 무관)으로
-  // 이름을 늘려 최대 3회 재시도. 403/500 등 비-400 은 즉시 throw.
+  // API eventual-consistency/동시 실행으로 400(중복)이 나면 이름을 늘려 최대 3회 재시도.
+  // 403/500 등 비-400 은 즉시 throw (백업 실패 시 적용 중단 — 쓰기 전 안전장치).
   let tabName = pickFreeName();
   for (let attempt = 1; ; attempt++) {
     try {
@@ -260,10 +277,10 @@ export async function createBackupTab(
     accessToken,
     fetchImpl
   );
-  const lines = buildBackupValues(raidNum, memberRows, statsRows);
+  const lines = buildBackupValues(label, memberRows, statsRows);
   await writeBackupRows(spreadsheetId, tabName, lines, accessToken, fetchImpl);
 
-  // 오래된 backup 탭 정리 (최신 3개만 유지) — 신규 추가 후 정리해서 신규는 항상 포함됨
+  // 새 백업 추가 후 최근 3개만 유지 — 신규가 가장 최신이라 항상 보존, 가장 오래된 것 삭제.
   await pruneOldBackupTabs(spreadsheetId, accessToken, fetchImpl);
 
   return tabName;

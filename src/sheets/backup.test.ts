@@ -67,81 +67,79 @@ function makeFetch(
   };
 }
 
+// 신규 백업탭 이름 패턴: _backup_YYYYMMDD-HHmmss
+const TS = /^_backup_\d{8}-\d{6}$/;
+
 describe("buildBackupValues", () => {
-  it("16 컬럼 너비로 padding + 두 영역 라벨링", () => {
-    const lines = buildBackupValues("40", [["A", "B"], ["C", "D"]], [["E", "F"]]);
+  it("16 컬럼 너비로 padding + 라벨 헤더 + 두 영역 라벨링", () => {
+    const lines = buildBackupValues("백업 - 2026-06-01 15:30:45", [["A", "B"], ["C", "D"]], [["E", "F"]]);
     // 헤더 + blank + "유니온 멤버" 라벨 + 2행 + blank + "레이드 통계" 라벨 + 1행 = 8 lines
     expect(lines.length).toBe(8);
-    expect(lines[0][0]).toMatch(/^40차 backup - \d{4}-\d{2}-\d{2}/);
+    expect(lines[0][0]).toBe("백업 - 2026-06-01 15:30:45");
     expect(lines[2][0]).toBe("=== 유니온 멤버 ===");
     expect(lines[3]).toEqual(["A", "B", "", "", "", "", "", "", "", "", "", "", "", "", "", ""]);
     expect(lines[6][0]).toBe("=== 레이드 통계 ===");
   });
 });
 
-describe("createBackupTab — locale 무관 이름 충돌 회피", () => {
-  it("충돌 없으면 _backup_{N}", async () => {
+describe("createBackupTab — 회차 무관 시각 기반 이름", () => {
+  it("회차와 무관하게 _backup_{시각} 생성", async () => {
     const { fetchImpl, addedTitles } = makeFetch([]);
-    const name = await createBackupTab("sid", "40", "tok", fetchImpl);
-    expect(name).toBe("_backup_40");
-    expect(addedTitles).toEqual(["_backup_40"]);
+    const name = await createBackupTab("sid", "tok", fetchImpl);
+    expect(name).toMatch(TS);
+    expect(addedTitles).toHaveLength(1);
+    expect(addedTitles[0]).toMatch(TS);
   });
 
-  it("_backup_40 이미 존재 → _backup_40_2 (에러 메시지 파싱 의존 안 함)", async () => {
-    const { fetchImpl, addedTitles } = makeFetch(["_backup_40"]);
-    const name = await createBackupTab("sid", "40", "tok", fetchImpl);
-    expect(name).toBe("_backup_40_2");
-    expect(addedTitles).toEqual(["_backup_40_2"]);
+  it("같은 초 충돌(400) → 이름 뒤 _2 붙여 재시도 후 성공", async () => {
+    const { fetchImpl, addedTitles } = makeFetch([], {
+      addFailStatus: 400,
+      addFailCount: 1,
+    });
+    const name = await createBackupTab("sid", "tok", fetchImpl);
+    expect(name).toMatch(/^_backup_\d{8}-\d{6}_2$/);
+    expect(addedTitles).toEqual([name]);
   });
 
-  it("_backup_40, _backup_40_2 둘 다 존재 → _backup_40_3", async () => {
-    const { fetchImpl, addedTitles } = makeFetch(["_backup_40", "_backup_40_2"]);
-    const name = await createBackupTab("sid", "40", "tok", fetchImpl);
-    expect(name).toBe("_backup_40_3");
-    expect(addedTitles).toEqual(["_backup_40_3"]);
-  });
-});
-
-describe("createBackupTab — 데이터 복사 + prune", () => {
-  it("4개째 백업 생성 시 가장 오래된 회차(_backup_38) 삭제", async () => {
-    const { fetchImpl, addedTitles, deletedIds } = makeFetch([
-      "_backup_38",
-      "_backup_39",
-      "_backup_40",
-    ]);
-    const name = await createBackupTab("sid", "41", "tok", fetchImpl);
-    expect(name).toBe("_backup_41");
-    expect(addedTitles).toEqual(["_backup_41"]);
-    // _backup_38 (sheetId 100, 회차 가장 작음) 삭제
-    expect(deletedIds).toEqual([100]);
-  });
-
-  it("addSheet 비-400 오류(403) → 재시도 없이 즉시 BACKUP_TAB_FAILED, batchGet 미호출", async () => {
+  it("addSheet 비-400 오류(403) → 재시도 없이 즉시 BACKUP_TAB_FAILED, 추가 안 함", async () => {
     const { fetchImpl, addedTitles } = makeFetch([], {
       addFailStatus: 403,
       addFailCount: 1,
     });
-    await expect(createBackupTab("sid", "40", "tok", fetchImpl)).rejects.toThrow(
+    await expect(createBackupTab("sid", "tok", fetchImpl)).rejects.toThrow(
       /BACKUP_TAB_FAILED/
     );
     expect(addedTitles).toEqual([]);
   });
 
-  it("사전 조회 후에도 400 충돌(race) → 이름 늘려 재시도 후 성공", async () => {
-    // 목록엔 없던 _backup_40 이 addSheet 시점에 400 → _backup_40_2 로 재시도 성공 (locale 무관)
-    const { fetchImpl, addedTitles } = makeFetch([], {
-      addFailStatus: 400,
-      addFailCount: 1,
-    });
-    const name = await createBackupTab("sid", "40", "tok", fetchImpl);
-    expect(name).toBe("_backup_40_2");
-    expect(addedTitles).toEqual(["_backup_40_2"]);
-  });
-
   it("batchGet 실패 → BACKUP_FETCH_FAILED", async () => {
     const { fetchImpl } = makeFetch([], { batchGetFail: true });
-    await expect(createBackupTab("sid", "40", "tok", fetchImpl)).rejects.toThrow(
+    await expect(createBackupTab("sid", "tok", fetchImpl)).rejects.toThrow(
       /BACKUP_FETCH_FAILED/
     );
+  });
+});
+
+describe("createBackupTab — 최근 3개 유지 (생성 시각 기준 FIFO)", () => {
+  it("백업 3개 상태에서 새로 만들면 가장 오래된 1개 삭제", async () => {
+    // 기존 3개(아주 오래된 시각) + 새 백업(now=최신) → 가장 오래된 것(sheetId 100) 삭제
+    const { fetchImpl, deletedIds } = makeFetch([
+      "_backup_20000101-000001", // sheetId 100 — 가장 오래됨
+      "_backup_20000101-000002", // 101
+      "_backup_20000101-000003", // 102
+    ]);
+    await createBackupTab("sid", "tok", fetchImpl);
+    expect(deletedIds).toEqual([100]);
+  });
+
+  it("구버전 회차 기반 탭(_backup_{회차})은 가장 오래됨으로 취급 → 먼저 삭제", async () => {
+    const { fetchImpl, deletedIds } = makeFetch([
+      "_backup_38", // 100
+      "_backup_39", // 101
+      "_backup_40", // 102
+    ]);
+    await createBackupTab("sid", "tok", fetchImpl);
+    // 신규 시각 탭이 가장 최신 → 구버전 중 회차 가장 작은 _backup_38(100) 삭제
+    expect(deletedIds).toEqual([100]);
   });
 });

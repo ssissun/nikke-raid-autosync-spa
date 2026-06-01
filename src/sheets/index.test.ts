@@ -113,7 +113,7 @@ describe("writeRaidData facade", () => {
       eventTarget: target,
     });
 
-    expect(result.backupTabName).toBe("_backup_5");
+    expect(result.backupTabName).toMatch(/^_backup_\d{8}-\d{6}$/);
     expect(completed).toBe(true);
     expect(completeDetail).not.toBeNull();
     expect(completeDetail!.raidNum).toBe("5");

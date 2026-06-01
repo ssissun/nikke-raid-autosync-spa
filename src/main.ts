@@ -897,13 +897,8 @@ async function applyAllChanges(): Promise<void> {
     const refreshedClass = getSyncClassification();
     if (refreshedClass === null) throw new Error("재매칭 결과 부재");
 
-    // 2) backup 1회 (모든 쓰기 전) — 라벨 = 대상 회차 중 max
-    const allRoundNums = [
-      ...preview.targetRaidNums,
-      ...preview.resultGapRounds,
-    ].map(Number);
-    const maxRaidNum = allRoundNums.reduce((a, b) => Math.max(a, b), 0).toString();
-    const backupTabName = await createBackupTab(sheetId, maxRaidNum, token);
+    // 2) backup 1회 (모든 쓰기 전) — 회차 무관, 생성 시각 기반 이름
+    const backupTabName = await createBackupTab(sheetId, token);
 
     // 3) 회차 루프 (오름차순) — 탭별 차수 순서 위치 삽입.
     //    missingMember: ensureRaidColumn(차수 위치 컬럼 삽입) + 싱크로 값 쓰기 (executeBatchUpdate 멤버 전용)
