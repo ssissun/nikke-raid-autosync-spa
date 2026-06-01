@@ -40,6 +40,9 @@ export interface RaidRoundData {
   // 레이드 당시 싱크로 레벨 — member_id → 그 회차 squad 최고 니케 lv (userscript 계산).
   // 미참여/탈퇴 멤버는 없음 → SPA 가 fallback(현재 synchro).
   memberSyncroLevels: Record<string, number>;
+  // 전체 참가자(닉네임 기준) 그 회차 squad 최고 lv — 탈퇴자 레벨 기록용 (userscript v2.4.3+).
+  // 구버전 userscript payload 에는 없을 수 있음(optional).
+  levelsByNickname?: Record<string, number>;
 }
 
 export type NikkeRaidPayload =

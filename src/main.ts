@@ -42,6 +42,7 @@ import {
   writeRaidData,
 } from "./sheets";
 import { applyMemberSync, type AutoSyncResult } from "./sync/auto-sync";
+import { readDropoutTab, recordDropouts } from "./sheets/dropout-log";
 import { normalizePayload, type NormalizedMultiPayload } from "./payload/normalize";
 import { selectMissingRounds, type RoundTarget } from "./payload/round-planner";
 import type { NikkeRaidPayload, ProcessedRaidRow } from "./types";
@@ -812,6 +813,63 @@ async function previewChanges(): Promise<void> {
   }
 }
 
+// 경로 2 — 탈퇴 멤버(leaving)의 누적 회차 레벨을 '탈퇴자 레벨 기록' 탭으로 이전.
+// auto-sync 가 유니온 멤버 탭에서 제거하기 전에 호출. 닉네임 기준 덮어쓰기(Q3).
+async function moveLeavingLevelsToDropout(
+  sheetId: string,
+  token: string,
+  leaving: readonly { nickname: string; sheetRow: number }[]
+): Promise<void> {
+  // 회차 컬럼은 헤더 패턴으로 탐지하므로 pre/post-migration layout 무관.
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent("유니온 멤버!A1:Z33")}`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`DROPOUT_MEMBER_READ_FAILED: HTTP ${res.status}`);
+  const values = ((await res.json()) as { values?: string[][] }).values ?? [];
+  const header = values[0] ?? [];
+  const roundCols = new Map<string, number>();
+  header.forEach((h, i) => {
+    const m = String(h ?? "").trim().match(/^(\d+)차$/);
+    if (m) roundCols.set(m[1], i);
+  });
+  const entries = new Map<string, Map<string, number>>();
+  for (const lv of leaving) {
+    if (!lv.nickname) continue;
+    const row = values[lv.sheetRow - 1] ?? [];
+    const rounds = new Map<string, number>();
+    for (const [round, col] of roundCols.entries()) {
+      const n = Number(String(row[col] ?? "").trim());
+      if (Number.isFinite(n) && n > 0) rounds.set(round, n);
+    }
+    if (rounds.size > 0) entries.set(lv.nickname, rounds);
+  }
+  if (entries.size > 0) {
+    await recordDropouts(sheetId, token, entries, "overwrite");
+  }
+}
+
+// 경로 1 — 백필한 과거 회차에 등장하나 현재 유니온에 없는 닉네임 = 과거 탈퇴자.
+// levelsByNickname(userscript v2.4.3+) 에서 추출 → 탈퇴자 탭에 빈 셀만 채움(Q2).
+async function recordBackfilledDropouts(
+  sheetId: string,
+  token: string,
+  normalized: NormalizedMultiPayload
+): Promise<void> {
+  const currentNicks = new Set(normalized.members.map((m) => m.nickname));
+  const entries = new Map<string, Map<string, number>>();
+  for (const round of normalized.rounds) {
+    const byNick = round.levelsByNickname;
+    if (byNick === undefined) continue;
+    for (const [nick, lv] of Object.entries(byNick)) {
+      if (lv <= 0 || currentNicks.has(nick)) continue;
+      if (!entries.has(nick)) entries.set(nick, new Map());
+      entries.get(nick)!.set(round.raidNum, lv);
+    }
+  }
+  if (entries.size > 0) {
+    await recordDropouts(sheetId, token, entries, "fillEmpty");
+  }
+}
+
 /**
  * 2-button 흐름 2단계 — 사용자 클릭으로 호출.
  * auto-sync (필요 시) → 재매칭 → dry-run plan → writeRaidData → appendRaidResultRow → 미참여 알림.
@@ -874,6 +932,9 @@ async function applyAllChanges(): Promise<void> {
       await diagnoseSheet();
     }
 
+    // '탈퇴자 레벨 기록' 탭 존재 여부 — 없으면 탈퇴자 기록 전부 skip (하위호환)
+    const dropoutTabPresent = (await readDropoutTab(sheetId, token)) !== null;
+
     // 1) auto-sync (현재 멤버 기준 1회 — 탈퇴/신규 있을 때만)
     const classResult = getSyncClassification();
     if (
@@ -881,6 +942,14 @@ async function applyAllChanges(): Promise<void> {
       (classResult.unmatchedSheetNicknames.length > 0 ||
         classResult.unmatchedPayloadMembers.length > 0)
     ) {
+      // 경로 2: 탈퇴 멤버 누적 레벨을 탈퇴자 탭으로 이전 — auto-sync 제거 전 (실패 시 throw → 데이터 보호)
+      if (dropoutTabPresent && classResult.unmatchedSheetNicknames.length > 0) {
+        await moveLeavingLevelsToDropout(
+          sheetId,
+          token,
+          classResult.unmatchedSheetNicknames
+        );
+      }
       lastAutoSync = await applyMemberSync(
         sheetId,
         token,
@@ -968,6 +1037,15 @@ async function applyAllChanges(): Promise<void> {
         );
       } catch (e) {
         console.warn(`[NRA-SPA] 레이드 결과 ${raidNum}차 삽입 실패 (치명적 아님):`, e);
+      }
+    }
+
+    // 4.5) 경로 1: 백필한 과거 회차에 등장한 탈퇴자 레벨 기록 (탭 있을 때만, 실패해도 비치명적)
+    if (dropoutTabPresent) {
+      try {
+        await recordBackfilledDropouts(sheetId, token, normalized);
+      } catch (e) {
+        console.warn("[NRA-SPA] 탈퇴자 레벨 기록(백필) 실패 (치명적 아님):", e);
       }
     }
 
