@@ -37,11 +37,11 @@ import {
   guessNextRaidNum,
   insertResultRowOrdered,
   insertStatsRowsOrdered,
-  migrateToMemberId,
   readExistingRaidNumsByTab,
   writeRaidData,
 } from "./sheets";
 import { applyMemberSync, type AutoSyncResult } from "./sync/auto-sync";
+import { reverseMigrateColB, writeMemberIdTab } from "./sheets/member-id-tab";
 import { readDropoutTab, recordDropouts } from "./sheets/dropout-log";
 import { normalizePayload, type NormalizedMultiPayload } from "./payload/normalize";
 import { selectMissingRounds, type RoundTarget } from "./payload/round-planner";
@@ -124,7 +124,7 @@ interface ChangesPreview {
   nicknameChanges: NicknameChange[]; // staying 멤버 중 닉네임이 바뀐 항목
   resultGapRounds: string[]; // 레이드 결과 탭에만 빠진 회차 (회차 행만 추가)
   layout: "pre-migration" | "post-migration";
-  needsMemberIdMigration: boolean; // layout === pre-migration 일 때 true
+  needsReverseMigration: boolean; // layout === post-migration (구버그 Col B member_id) → 역마이그레이션 필요
 }
 let lastChangesPreview: ChangesPreview | null = null;
 let lastNormalized: NormalizedMultiPayload | null = null; // previewChanges → applyAllChanges 전달
@@ -681,18 +681,20 @@ async function autoSyncMembers(): Promise<void> {
 
   try {
     lastError = null;
-    const layout =
-      lastDiagnostic?.guessedFormat === "pre-migration"
-        ? "pre-migration"
-        : "post-migration";
+    const initialMemberIdByRow = new Map<number, string>();
+    for (const s of classResult.classification.staying)
+      initialMemberIdByRow.set(s.sheetRow, s.member_id);
+    for (const l of classResult.classification.leaving)
+      initialMemberIdByRow.set(l.sheetRow, l.member_id);
     lastAutoSync = await applyMemberSync(
       sheetId,
       token,
       classResult.unmatchedSheetNicknames,
       classResult.unmatchedPayloadMembers,
-      { layout }
+      { initialMemberIdByRow }
     );
     console.info("[NRA-SPA] auto-sync 완료", lastAutoSync);
+    await writeMemberIdTab(sheetId, token, lastAutoSync.finalMemberIdByRow);
     // 시트 변경 후 재진단 + 재매칭
     await autoDiagnose();
     await runMatching();
@@ -777,10 +779,12 @@ async function previewChanges(): Promise<void> {
 
     lastTargets = selection.targetRounds;
 
+    // 유니온 멤버는 항상 원본 레이아웃(pre-migration)이 정상. Col B 에 member_id 가 삽입된
+    // 구버그 시트(post-migration)만 예외 → apply 단계서 역마이그레이션으로 복구.
     const layout =
-      lastDiagnostic?.guessedFormat === "pre-migration"
-        ? "pre-migration"
-        : "post-migration";
+      lastDiagnostic?.guessedFormat === "post-migration"
+        ? "post-migration"
+        : "pre-migration";
 
     // 레이드 결과 탭에만 빠진 회차 — target(통계/멤버 누락)으로 새로 쓸 회차도 포함하여 계산
     const resultGapRounds = computeResultGaps(
@@ -803,7 +807,7 @@ async function previewChanges(): Promise<void> {
       nicknameChanges: classResult.nicknameChanges,
       resultGapRounds,
       layout,
-      needsMemberIdMigration: layout === "pre-migration",
+      needsReverseMigration: layout === "post-migration",
     };
     nonParticipatingNicknames = null;
     renderApp();
@@ -922,30 +926,38 @@ async function applyAllChanges(): Promise<void> {
       return;
     }
 
-    // 0.5) Pre→Post member_id 마이그레이션 (1회). 회차 무관.
-    if (preview.needsMemberIdMigration) {
-      const classResult = getSyncClassification();
-      if (classResult === null) throw new Error("마이그레이션 진행 불가 — 매칭 결과 부재");
-      const memberIdByRow = new Map<number, string>();
-      for (const s of classResult.classification.staying) {
-        memberIdByRow.set(s.sheetRow, s.member_id);
+    // 0.5) 역마이그레이션 — 이미 유니온 멤버 Col B 에 member_id 가 삽입된 구버그 시트 복구.
+    //      Col B 의 member_id 를 _nra_member_mapping 탭으로 이전 + Col B 삭제 → 유니온 멤버 원본 레이아웃 원복.
+    //      (마스터 Apps Script/수식이 고정 열로 멤버 레벨을 읽으므로 유니온 멤버 열 삽입은 호환성을 깨뜨림.)
+    if (preview.needsReverseMigration) {
+      const reverse = await reverseMigrateColB(sheetId, token);
+      if (reverse.migrated) {
+        console.info(`[NRA-SPA] member_id Col B 역마이그레이션 완료 (${reverse.count}건) → _nra_member_mapping 탭`);
       }
-      const migrateResult = await migrateToMemberId(sheetId, token, memberIdByRow);
-      console.info(`[NRA-SPA] member_id 마이그레이션 완료 (${migrateResult.filledRows}건)`);
-      preview.layout = "post-migration";
-      preview.needsMemberIdMigration = false;
+      preview.layout = "pre-migration";
+      preview.needsReverseMigration = false;
       await diagnoseSheet();
+      clearSyncClassification();
+      await startClassificationFlow(token, sheetId, normalized.members);
     }
 
     // '탈퇴자 레벨 기록' 탭 존재 여부 — 없으면 탈퇴자 기록 전부 skip (하위호환)
     const dropoutTabPresent = (await readDropoutTab(sheetId, token)) !== null;
 
-    // 1) auto-sync (현재 멤버 기준 1회 — 탈퇴/신규 있을 때만)
+    // 1) auto-sync (현재 멤버 기준 1회 — 탈퇴/신규 있을 때만) + member_id 매핑 탭 갱신
     const classResult = getSyncClassification();
+    if (classResult === null) throw new Error("매칭 결과 부재");
+
+    // 현재 분류의 {sheetRow → member_id} (staying+leaving) — auto-sync shift 에 함께 실어 최종 매핑 산출
+    const initialMemberIdByRow = new Map<number, string>();
+    for (const s of classResult.classification.staying)
+      initialMemberIdByRow.set(s.sheetRow, s.member_id);
+    for (const l of classResult.classification.leaving)
+      initialMemberIdByRow.set(l.sheetRow, l.member_id);
+
     if (
-      classResult !== null &&
-      (classResult.unmatchedSheetNicknames.length > 0 ||
-        classResult.unmatchedPayloadMembers.length > 0)
+      classResult.unmatchedSheetNicknames.length > 0 ||
+      classResult.unmatchedPayloadMembers.length > 0
     ) {
       // 경로 2: 탈퇴 멤버 누적 레벨을 탈퇴자 탭으로 이전 — auto-sync 제거 전 (실패 시 throw → 데이터 보호)
       if (dropoutTabPresent && classResult.unmatchedSheetNicknames.length > 0) {
@@ -960,12 +972,17 @@ async function applyAllChanges(): Promise<void> {
         token,
         classResult.unmatchedSheetNicknames,
         classResult.unmatchedPayloadMembers,
-        { layout: preview.layout }
+        { initialMemberIdByRow }
       );
       console.info("[NRA-SPA] auto-sync 완료", lastAutoSync);
+      // member_id 매핑 탭을 shift 반영 최종 스냅샷으로 갱신 (재매칭 전에 기록 → 탭/시트 행 정렬 유지)
+      await writeMemberIdTab(sheetId, token, lastAutoSync.finalMemberIdByRow);
       await diagnoseSheet();
       clearSyncClassification();
       await startClassificationFlow(token, sheetId, normalized.members);
+    } else {
+      // 멤버 변동 없음 — 현재 매핑을 탭에 기록 (첫 실행 시 탭 생성 / 멱등 갱신)
+      await writeMemberIdTab(sheetId, token, initialMemberIdByRow);
     }
 
     const refreshedClass = getSyncClassification();
@@ -1258,8 +1275,8 @@ function renderApp(): void {
             <li><strong>신규 가입 멤버</strong> (${preview.joiningNicknames.length}명)${preview.joiningNicknames.length > 0 ? `: ${preview.joiningNicknames.map((n) => escapeHtml(n)).join(", ")}` : ""}</li>
             <li><strong>닉네임 변경 멤버</strong> (${preview.nicknameChanges.length}명)${preview.nicknameChanges.length > 0 ? `: ${preview.nicknameChanges.map((c) => `${escapeHtml(c.old)} → ${escapeHtml(c.new)}`).join(", ")}` : ""}</li>
             ${
-              preview.needsMemberIdMigration
-                ? `<li><strong>최초 1회 자동 작업</strong>: 시트 <code>유니온 멤버</code> 탭에 <code>member_id</code> 숨김 컬럼이 자동 추가됩니다 (다음 사용부터 닉네임 변경에도 매칭이 정확히 유지됨)</li>`
+              preview.needsReverseMigration
+                ? `<li><strong>자동 복구</strong>: <code>유니온 멤버</code> 탭에 잘못 삽입된 <code>member_id</code> 숨김 컬럼을 제거하고 member_id 를 별도 <code>_nra_member_mapping</code> 탭으로 옮깁니다 (시트 수식·Apps Script 호환성 복구)</li>`
                 : ""
             }
           </ul>

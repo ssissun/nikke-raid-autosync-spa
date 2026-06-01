@@ -8,6 +8,7 @@ import {
 } from "./algorithm";
 import { readColBMap, type ReadColBMapResult } from "./col-b-reader";
 import { detectMigrationMode, type MigrationMode } from "./migration";
+import { readMemberIdTab } from "../sheets/member-id-tab";
 import type { NicknameChange, SyncClassification } from "./types";
 
 export const MIGRATION_BLOCKED = "MIGRATION_BLOCKED";
@@ -98,7 +99,19 @@ export async function startClassificationFlow(
   payloadMembers: readonly GuildMember[]
 ): Promise<ClassificationResult> {
   const sheetRead: ReadColBMapResult = await readColBMap(accessToken, sheetId);
-  const mode = detectMigrationMode(sheetRead.allColBEmpty, sheetRead.colCNicknames);
+
+  // 원본 레이아웃(pre-migration)이면 member_id 를 _nra_member_mapping 탭에서 읽어 colBMap 채움.
+  // post-migration(구버그 — Col B 에 member_id) 시트는 Col B 에서 직접 읽음 (apply 단계서 역마이그레이션).
+  let allColBEmpty = sheetRead.allColBEmpty;
+  if (sheetRead.layout === "pre-migration") {
+    const tab = await readMemberIdTab(sheetId, accessToken);
+    for (const [row, memberId] of tab.memberIdByRow.entries()) {
+      sheetRead.colBMap.set(memberId, row);
+    }
+    allColBEmpty = sheetRead.colBMap.size === 0;
+  }
+
+  const mode = detectMigrationMode(allColBEmpty, sheetRead.colCNicknames);
 
   if (mode === "block") {
     throw new SyncError(

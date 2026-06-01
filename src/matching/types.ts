@@ -1,11 +1,13 @@
-// F-NRA-002-05 매칭 타입 — 2026-05-22 갱신: `_nra_member_mapping` 탭 폐기 → 유니온 멤버 Col B 통합
+// F-NRA-002-05 매칭 타입.
+// member_id 저장 위치: 유니온 멤버 원본 레이아웃 유지를 위해 별도 `_nra_member_mapping` 탭(행 1:1 정렬).
+// (유니온 멤버 Col B 삽입 방식은 마스터 Apps Script/수식 호환성을 깨뜨려 폐기 — 구버그 시트는 역마이그레이션.)
 // SOT: ai_docs/nikke-raid-autosync/SHEET_SCHEMA.md §2 / API_SPEC.md §2.1
 
-// 유니온 멤버 시트 한 행 (Col A/B/C)
+// 유니온 멤버 한 멤버 (가입순서/닉네임은 원본 시트, member_id 는 매핑 탭에서 결합)
 export interface ColBRow {
-  joined_order: number; // Col A, 1-based
-  member_id: string; // Col B (hidden), 불변 키 — 공백이면 마이그레이션 미완료
-  nickname: string; // Col C, 표시용
+  joined_order: number; // 유니온 멤버 Col A, 1-based
+  member_id: string; // _nra_member_mapping 탭, 불변 키 — 공백이면 매핑 미설정
+  nickname: string; // 유니온 멤버 Col B, 표시용
   sheetRow: number; // joined_order + 1 (header=row1)
 }
 

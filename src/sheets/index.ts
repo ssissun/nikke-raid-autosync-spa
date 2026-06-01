@@ -84,7 +84,6 @@ export {
 export type { RaidColumnResolution, RaidColumnLayout } from "./find-column";
 export { appendRaidResultRow } from "./raid-result";
 export type { AppendRaidResultResult } from "./raid-result";
-export { migrateToMemberId } from "./migrate-to-member-id";
 export {
   insertStatsRowsOrdered,
   insertResultRowOrdered,
