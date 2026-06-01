@@ -1,5 +1,5 @@
 // F-NRA-002-07 백업 탭 생성 + 데이터 복사 (SHEET_SCHEMA §5).
-// 1. `_backup_{회차}` 탭 생성 (중복 시 `_2` fallback)
+// 1. `_backup_{회차}` 탭 생성 (중복 시 `_2`·`_3`… 증가 — 사전 조회로 locale 무관 충돌 회피)
 // 2. `유니온 멤버` + `레이드 통계` 변경 대상 영역 데이터 fetch
 // 3. backup 탭에 라벨 + 두 영역 데이터 쓰기
 // 4. 백업탭은 최대 3개만 유지 (가장 오래된 회차부터 삭제)
@@ -38,14 +38,9 @@ async function attemptAddSheet(
   });
   if (res.ok) return;
 
+  // 이름 충돌은 createBackupTab 이 사전 조회로 회피하므로 여기 도달 시는 실질 실패.
   const errBody = (await res.json().catch(() => ({}))) as SheetsErrorBody;
   const msg = errBody.error?.message ?? "";
-  if (
-    res.status === 400 &&
-    (msg.includes("already exists") || msg.toLowerCase().includes("duplicate"))
-  ) {
-    throw new Error("ALREADY_EXISTS");
-  }
   throw new Error(`BACKUP_TAB_FAILED: HTTP ${res.status} ${msg}`);
 }
 
@@ -232,18 +227,32 @@ export async function createBackupTab(
   accessToken: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<string> {
-  const primary = `_backup_${raidNum}`;
-  let tabName: string;
-  try {
-    await attemptAddSheet(spreadsheetId, primary, accessToken, fetchImpl);
-    tabName = primary;
-  } catch (e) {
-    if (e instanceof Error && e.message === "ALREADY_EXISTS") {
-      const fallback = `${primary}_2`;
-      await attemptAddSheet(spreadsheetId, fallback, accessToken, fetchImpl);
-      tabName = fallback;
-    } else {
-      throw e;
+  // 충돌하지 않는 이름을 기존 탭 목록에서 먼저 결정 (locale 무관).
+  // Google 의 "이미 존재" 에러 메시지는 사용자 locale(ko/en/…)에 따라 달라
+  // 메시지 파싱 기반 판정은 불안정 (ko="이미 있습니다" 미스매치 → 적용 중단 버그) — 사전 조회로 회피.
+  const takenTitles = new Set(
+    (await listAllSheets(spreadsheetId, accessToken, fetchImpl)).map((s) => s.title)
+  );
+  const pickFreeName = (): string => {
+    let name = `_backup_${raidNum}`;
+    for (let n = 2; takenTitles.has(name); n++) name = `_backup_${raidNum}_${n}`;
+    return name;
+  };
+
+  // 사전 조회로 충돌을 피하지만, API eventual-consistency/동시 실행으로 여전히
+  // 400(중복)이 날 수 있어 HTTP status 기준(메시지 파싱 X → locale 무관)으로
+  // 이름을 늘려 최대 3회 재시도. 403/500 등 비-400 은 즉시 throw.
+  let tabName = pickFreeName();
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await attemptAddSheet(spreadsheetId, tabName, accessToken, fetchImpl);
+      break;
+    } catch (e) {
+      const isDuplicate =
+        e instanceof Error && /^BACKUP_TAB_FAILED: HTTP 400/.test(e.message);
+      if (!isDuplicate || attempt >= 3) throw e;
+      takenTitles.add(tabName);
+      tabName = pickFreeName();
     }
   }
 
