@@ -141,6 +141,29 @@ export async function startClassificationFlow(
     sheetRead.colCNicknames,
     payloadMembers
   );
+
+  // mode "none"(매핑 탭 기반): 탈퇴/신규는 classification(member_id 기준)에 담김 →
+  // apply(applyMemberSync)가 실제로 쓰는 unmatched* 로 surface해야 적용됨.
+  //  - 탈퇴: member_id 기반 leaving + colBMap 으로 해석 안 된 시트 행 중 닉네임도 payload 에 없는 행
+  //          (수동 편집·행 드리프트로 member_id 도 닉네임도 매칭 안 되는 잔존 행 → 탈퇴 처리)
+  //  - 신규: payload member_id 가 colBMap 에 없는 멤버
+  if (mode === "none") {
+    const claimedRows = new Set(sheetRead.colBMap.values());
+    const payloadNicks = new Set(payloadMembers.map((m) => m.nickname));
+    const leaving = classification.leaving.map((l) => ({
+      nickname: l.nickname,
+      sheetRow: l.sheetRow,
+    }));
+    for (const [sheetRow, nickname] of sheetRead.colCNicknames.entries()) {
+      if (!claimedRows.has(sheetRow) && !payloadNicks.has(nickname)) {
+        leaving.push({ nickname, sheetRow });
+      }
+    }
+    unmatchedSheetNicknames = leaving;
+    const joiningIds = new Set(classification.joining.map((j) => j.member_id));
+    unmatchedPayloadMembers = payloadMembers.filter((m) => joiningIds.has(m.member_id));
+  }
+
   const nicknameChanges = detectNicknameChanges(classification);
   const baseComplete = isSyncClassificationComplete(classification);
   // backfill 모드에서 unmatched 가 있으면 isComplete=false (auto-sync 필요)
