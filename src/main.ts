@@ -30,11 +30,13 @@ import {
 } from "./dryrun";
 import {
   ALLOWED_FINGERPRINTS,
-  appendRaidResultRow,
-  applyMultiRoundWrite,
   computeFingerprint,
+  createBackupTab,
   ensureRaidColumn,
+  executeBatchUpdate,
   guessNextRaidNum,
+  insertResultRowOrdered,
+  insertStatsRowsOrdered,
   migrateToMemberId,
   readExistingRaidNumsByTab,
   writeRaidData,
@@ -114,6 +116,7 @@ interface ChangesPreview {
   leavingNicknames: string[]; // 시트에만 있는 닉네임 = 탈퇴
   joiningNicknames: string[]; // payload에만 있는 닉네임 = 신규
   nicknameChanges: NicknameChange[]; // staying 멤버 중 닉네임이 바뀐 항목
+  resultGapRounds: string[]; // 레이드 결과 탭에만 빠진 회차 (회차 행만 추가)
   layout: "pre-migration" | "post-migration";
   needsMemberIdMigration: boolean; // layout === pre-migration 일 때 true
 }
@@ -273,9 +276,10 @@ async function diagnoseSheet(): Promise<SheetDiagnostic | null> {
   }
 }
 
-// 시트 기존 회차 — 탭별 분리 캐시. autoDiagnose 시 갱신. 누락 판정 + 백필 핸드셰이크용.
+// 시트 기존 회차 — 탭별 분리 캐시 (3 탭). autoDiagnose + previewChanges 시 갱신.
 let lastStatsRounds: Set<string> = new Set();
 let lastMemberRounds: Set<string> = new Set();
+let lastResultRounds: Set<string> = new Set();
 
 async function refreshExistingRounds(): Promise<void> {
   const token = getAccessToken();
@@ -283,20 +287,34 @@ async function refreshExistingRounds(): Promise<void> {
   if (token === null || sheetId === null) {
     lastStatsRounds = new Set();
     lastMemberRounds = new Set();
+    lastResultRounds = new Set();
     return;
   }
   try {
-    const { statsRounds, memberRounds } = await readExistingRaidNumsByTab(
-      sheetId,
-      token
-    );
+    const { statsRounds, memberRounds, resultRounds } =
+      await readExistingRaidNumsByTab(sheetId, token);
     lastStatsRounds = statsRounds;
     lastMemberRounds = memberRounds;
+    lastResultRounds = resultRounds;
   } catch (e) {
     console.warn("[NRA-SPA] readExistingRaidNumsByTab 실패:", e);
     lastStatsRounds = new Set();
     lastMemberRounds = new Set();
+    lastResultRounds = new Set();
   }
+}
+
+// 레이드 결과 행이 필요한데 빠진 회차 — 시트(통계∪멤버)에 있거나 이번에 쓸 회차 중 결과 탭에 없는 것.
+// 레이드 결과 행은 회차 번호만 필요(fetch 데이터 불필요)라 통계/멤버 target 과 독립적으로 채울 수 있음.
+function computeResultGaps(extraWritten: readonly string[] = []): string[] {
+  const inSheet = new Set<string>([
+    ...lastStatsRounds,
+    ...lastMemberRounds,
+    ...extraWritten,
+  ]);
+  return [...inSheet]
+    .filter((rn) => !lastResultRounds.has(rn))
+    .sort((a, b) => Number(a) - Number(b));
 }
 
 // userscript 가 데이터를 fetch 해야 하는 회차 = 두 탭 중 한 곳에라도 누락된 회차.
@@ -605,14 +623,9 @@ async function confirmWriteFlow(): Promise<void> {
     });
     // `레이드 결과` 탭에도 새 회차 row 추가 (회차 컬럼만, 다른 컬럼 사용자 입력 대기)
     try {
-      const rrResult = await appendRaidResultRow(
-        sheetId,
-        lastBatchPlan.raidNum,
-        token
-      );
+      const rr = await insertResultRowOrdered(sheetId, lastBatchPlan.raidNum, token);
       console.info(
-        `[NRA-SPA] 레이드 결과 row 추가: ${rrResult.raidNumCol}${rrResult.sheetRow}` +
-          (rrResult.alreadyExisted ? " (이미 존재)" : "")
+        `[NRA-SPA] 레이드 결과 ${lastBatchPlan.raidNum}차 행 ${rr.inserted ? "삽입" : "이미 존재"}`
       );
     } catch (e) {
       // 부수적 작업 — 실패해도 메인 쓰기는 성공으로 처리
@@ -720,11 +733,12 @@ async function previewChanges(): Promise<void> {
     const classResult = getSyncClassification();
     if (classResult === null) return;
 
-    // 2) 시트 기존 회차 → 탭별 누락 회차 선별
-    const { statsRounds, memberRounds } = await readExistingRaidNumsByTab(
-      sheetId,
-      token
-    );
+    // 2) 시트 기존 회차 → 탭별 누락 회차 선별 (3 탭 캐시 갱신)
+    const { statsRounds, memberRounds, resultRounds } =
+      await readExistingRaidNumsByTab(sheetId, token);
+    lastStatsRounds = statsRounds;
+    lastMemberRounds = memberRounds;
+    lastResultRounds = resultRounds;
     let selection = selectMissingRounds(normalized, statsRounds, memberRounds);
 
     // fallback: 회차 정보 전무(레거시 single, raidNum 부재로 round 0개) → guessNextRaidNum
@@ -762,6 +776,11 @@ async function previewChanges(): Promise<void> {
         ? "pre-migration"
         : "post-migration";
 
+    // 레이드 결과 탭에만 빠진 회차 — target(통계/멤버 누락)으로 새로 쓸 회차도 포함하여 계산
+    const resultGapRounds = computeResultGaps(
+      selection.targetRounds.map((t) => t.round.raidNum)
+    );
+
     lastChangesPreview = {
       targetRaidNums: selection.targetRounds.map((t) => t.round.raidNum),
       alreadyInSheet: selection.alreadyComplete,
@@ -776,6 +795,7 @@ async function previewChanges(): Promise<void> {
       leavingNicknames: classResult.unmatchedSheetNicknames.map((u) => u.nickname),
       joiningNicknames: classResult.unmatchedPayloadMembers.map((m) => m.nickname),
       nicknameChanges: classResult.nicknameChanges,
+      resultGapRounds,
       layout,
       needsMemberIdMigration: layout === "pre-migration",
     };
@@ -812,7 +832,10 @@ async function applyAllChanges(): Promise<void> {
   const preview = lastChangesPreview;
   const normalized = lastNormalized;
 
-  if (preview.targetRaidNums.length === 0) {
+  if (
+    preview.targetRaidNums.length === 0 &&
+    preview.resultGapRounds.length === 0
+  ) {
     lastError = "처리할 회차 없음 — 시트가 이미 최신 상태입니다.";
     renderApp();
     return;
@@ -874,14 +897,28 @@ async function applyAllChanges(): Promise<void> {
     const refreshedClass = getSyncClassification();
     if (refreshedClass === null) throw new Error("재매칭 결과 부재");
 
-    // 2) 회차 루프 — 탭별 누락 플래그에 따라 부분 쓰기 (lastRaidRow 누적)
-    //    missingMember 일 때만 ensureRaidColumn (멤버 컬럼 확보), missingStats 일 때만 통계 행 추가.
-    let cumLastRaidRow = await getLastRaidRow(sheetId, token);
-    const plans: BatchUpdatePlan[] = [];
+    // 2) backup 1회 (모든 쓰기 전) — 라벨 = 대상 회차 중 max
+    const allRoundNums = [
+      ...preview.targetRaidNums,
+      ...preview.resultGapRounds,
+    ].map(Number);
+    const maxRaidNum = allRoundNums.reduce((a, b) => Math.max(a, b), 0).toString();
+    const backupTabName = await createBackupTab(sheetId, maxRaidNum, token);
+
+    // 3) 회차 루프 (오름차순) — 탭별 차수 순서 위치 삽입.
+    //    missingMember: ensureRaidColumn(차수 위치 컬럼 삽입) + 싱크로 값 쓰기 (executeBatchUpdate 멤버 전용)
+    //    missingStats:  insertStatsRowsOrdered(차수 위치 행 블록 삽입)
+    const writtenRaidNums: string[] = [];
     for (const target of lastTargets) {
       const raidNum = target.round.raidNum;
-      // 멤버 컬럼이 필요할 때만 ensureRaidColumn (통계만 누락이면 컬럼 이미 존재 → 건드릴 필요 없음)
-      let syncroColumn = "";
+      const targetLabel = `${raidNum}차`;
+      const normalizedRaid = target.round.raid.map((row) => {
+        const next = [...row] as ProcessedRaidRow;
+        next[0] = targetLabel;
+        return next;
+      });
+
+      // 3a) 유니온 멤버 — 회차 컬럼 차수 위치 삽입 + 싱크로 값
       if (target.missingMember) {
         const resolution = await ensureRaidColumn(
           sheetId,
@@ -890,61 +927,51 @@ async function applyAllChanges(): Promise<void> {
           fetch,
           preview.layout
         );
-        syncroColumn = resolution.column;
+        const plan = prepareRoundBatchUpdate({
+          classification: refreshedClass.classification,
+          alerts: refreshedClass.alerts,
+          raidNum,
+          raidRows: normalizedRaid,
+          roundSyncroLevels: target.round.memberSyncroLevels,
+          members: normalized.members,
+          lastRaidRow: 0,
+          syncroColumn: resolution.column,
+          includeStats: false,
+          includeMember: true,
+        });
+        if (plan.memberSyncroUpdates.length > 0) {
+          await executeBatchUpdate(sheetId, plan, token, {
+            syncroColumn: resolution.column,
+          });
+        }
       }
-      // index 0 라벨을 `${raidNum}차` 로 정규화
-      const targetLabel = `${raidNum}차`;
-      const normalizedRaid = target.round.raid.map((row) => {
-        const next = [...row] as ProcessedRaidRow;
-        next[0] = targetLabel;
-        return next;
-      });
-      const plan = prepareRoundBatchUpdate({
-        classification: refreshedClass.classification,
-        alerts: refreshedClass.alerts,
-        raidNum,
-        raidRows: normalizedRaid,
-        roundSyncroLevels: target.round.memberSyncroLevels,
-        members: normalized.members,
-        lastRaidRow: cumLastRaidRow,
-        syncroColumn,
-        includeStats: target.missingStats,
-        includeMember: target.missingMember,
-      });
-      plans.push(plan);
-      cumLastRaidRow += plan.raidStatsRows.length;
+
+      // 3b) 레이드 통계 — 회차 행 블록 차수 위치 삽입
+      if (target.missingStats) {
+        const statsRows = normalizedRaid.map((r) =>
+          r.map((c) => (typeof c === "number" ? String(c) : c))
+        );
+        await insertStatsRowsOrdered(sheetId, raidNum, statsRows, token);
+      }
+
+      writtenRaidNums.push(raidNum);
     }
-    lastBatchPlan = plans[plans.length - 1] ?? null;
 
-    // 3) 통합 쓰기 — fingerprint 1회 + backup 1회(라벨=max 회차) + executeBatchUpdate N회
-    const maxRaidNum = preview.targetRaidNums
-      .map((n) => Number(n))
-      .reduce((a, b) => Math.max(a, b), 0)
-      .toString();
-    const result = await applyMultiRoundWrite({
-      spreadsheetId: sheetId,
-      accessToken: token,
-      plans,
-      backupRaidNum: maxRaidNum,
-      allowedFingerprints: allowedFp,
-    });
-    console.info("[NRA-SPA] 다회차 쓰기 완료:", result.writtenRaidNums.join(", "));
-
-    // 4) 레이드 결과 row 추가 — 회차별 (idempotent)
-    for (const raidNum of result.writtenRaidNums) {
+    // 4) 레이드 결과 — 차수 위치 행 삽입 (target 으로 쓴 회차 + 결과 탭에만 빠진 회차)
+    const resultGaps = computeResultGaps(writtenRaidNums);
+    for (const raidNum of resultGaps) {
       try {
-        const rr = await appendRaidResultRow(sheetId, raidNum, token);
+        const rr = await insertResultRowOrdered(sheetId, raidNum, token);
         console.info(
-          `[NRA-SPA] 레이드 결과 row: ${rr.raidNumCol}${rr.sheetRow}` +
-            (rr.alreadyExisted ? " (이미 존재)" : "")
+          `[NRA-SPA] 레이드 결과 ${raidNum}차 행 ${rr.inserted ? "삽입" : "이미 존재"}`
         );
       } catch (e) {
-        console.warn(`[NRA-SPA] 레이드 결과 row 추가 실패 ${raidNum}차 (치명적 아님):`, e);
+        console.warn(`[NRA-SPA] 레이드 결과 ${raidNum}차 삽입 실패 (치명적 아님):`, e);
       }
     }
 
     // 5) 미참여 멤버 — 최신(max) 회차 기준
-    const latestNum = result.writtenRaidNums
+    const latestNum = writtenRaidNums
       .map((n) => Number(n))
       .reduce((a, b) => Math.max(a, b), 0)
       .toString();
@@ -962,8 +989,19 @@ async function applyAllChanges(): Promise<void> {
       nonParticipatingNicknames = null;
     }
 
+    console.info(
+      "[NRA-SPA] 적용 완료:",
+      writtenRaidNums.join(", "),
+      "결과 gap:",
+      resultGaps.join(", ")
+    );
     writeStatus = "done";
-    writeResult = result;
+    writeResult = {
+      backupTabName,
+      writtenRaidNums: [...new Set([...writtenRaidNums, ...resultGaps])].sort(
+        (a, b) => Number(a) - Number(b)
+      ),
+    };
   } catch (e) {
     writeStatus = "error";
     lastError = e instanceof Error ? e.message : String(e);
@@ -1119,7 +1157,10 @@ function renderApp(): void {
   const totalNewRows = preview
     ? preview.rounds.reduce((a, r) => a + (r.missingStats ? r.raidStatsRowsCount : 0), 0)
     : 0;
-  const noTarget = preview !== null && preview.targetRaidNums.length === 0;
+  const noTarget =
+    preview !== null &&
+    preview.targetRaidNums.length === 0 &&
+    preview.resultGapRounds.length === 0;
   const previewBlock =
     preview !== null
       ? `
@@ -1129,7 +1170,8 @@ function renderApp(): void {
               ? `<p class="status status--ok">✅ 시트가 이미 최신 상태입니다. 추가할 회차가 없습니다.${preview.alreadyInSheet.length > 0 ? ` (시트 보유 회차: ${preview.alreadyInSheet.map((n) => escapeHtml(n) + "차").join(", ")})` : ""}</p>`
               : `
           <ul class="changes">
-            <li><strong>처리할 회차</strong> (${preview.targetRaidNums.length}개): ${preview.targetRaidNums.map((n) => escapeHtml(n) + "차").join(" · ")}</li>
+            ${preview.targetRaidNums.length > 0 ? `<li><strong>처리할 회차</strong> (${preview.targetRaidNums.length}개): ${preview.targetRaidNums.map((n) => escapeHtml(n) + "차").join(" · ")}</li>` : ""}
+            ${preview.resultGapRounds.length > 0 ? `<li><strong>레이드 결과 행 추가</strong>: ${preview.resultGapRounds.map((n) => escapeHtml(n) + "차").join(", ")}</li>` : ""}
             ${preview.alreadyInSheet.length > 0 ? `<li><strong>이미 시트에 있어 skip</strong>: ${preview.alreadyInSheet.map((n) => escapeHtml(n) + "차").join(", ")}</li>` : ""}
             ${preview.unavailableButRequested.length > 0 ? `<li class="status--warn"><strong>데이터 없는 회차</strong>: ${preview.unavailableButRequested.map((n) => escapeHtml(n) + "차").join(", ")}</li>` : ""}
             <li><strong>레이드 통계 신규 행</strong>: 총 ${totalNewRows}행</li>
@@ -1159,7 +1201,7 @@ function renderApp(): void {
           }
           ${
             writeStatus === "idle" && !noTarget
-              ? `<button type="button" id="apply-all-btn" ${trustGate ? "disabled" : ""}>✅ 모든 변경 적용 (${preview.targetRaidNums.length}개 회차)</button>`
+              ? `<button type="button" id="apply-all-btn" ${trustGate ? "disabled" : ""}>✅ 모든 변경 적용 (${[...new Set([...preview.targetRaidNums, ...preview.resultGapRounds])].length}개 회차)</button>`
               : ""
           }
           ${

@@ -35,12 +35,24 @@ export function extractRaidNumSet(values: readonly string[]): Set<string> {
 export interface ExistingRaidNumsByTab {
   memberRounds: Set<string>; // 유니온 멤버 회차 컬럼 헤더에 존재
   statsRounds: Set<string>; // 레이드 통계 ColA 회차 라벨에 존재
+  resultRounds: Set<string>; // 레이드 결과 "회차" 컬럼 행 라벨에 존재
+}
+
+// 2D 표(rows)의 "회차" 헤더 컬럼에서 "N차" 집합 추출. 헤더 부재 시 빈 집합.
+function extractRaidNumSetFromTable(rows: string[][]): Set<string> {
+  if (rows.length === 0) return new Set();
+  const header = rows[0] ?? [];
+  const colIdx = header.findIndex((h) => (h ?? "").trim() === "회차");
+  if (colIdx === -1) return new Set();
+  const colValues = rows.slice(1).map((r) => r[colIdx] ?? "");
+  return extractRaidNumSet(colValues);
 }
 
 /**
  * 시트 기존 회차를 탭별로 분리하여 반환 — 탭별 누락 판정용.
  *   memberRounds: 유니온 멤버 헤더 row1 의 "N차" 컬럼
  *   statsRounds:  레이드 통계 ColA 의 "N차" 행 라벨
+ *   resultRounds: 레이드 결과 "회차" 컬럼의 "N차" 행 라벨
  */
 export async function readExistingRaidNumsByTab(
   spreadsheetId: string,
@@ -50,21 +62,26 @@ export async function readExistingRaidNumsByTab(
   const ranges = [
     encodeURIComponent("유니온 멤버!A1:Z1"),
     encodeURIComponent("레이드 통계!A1:A2000"),
+    encodeURIComponent("레이드 결과!A1:Z500"),
   ];
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values:batchGet?ranges=${ranges.join("&ranges=")}`;
   const res = await fetchImpl(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
-  if (!res.ok) return { memberRounds: new Set(), statsRounds: new Set() };
+  if (!res.ok) {
+    return { memberRounds: new Set(), statsRounds: new Set(), resultRounds: new Set() };
+  }
   const body = (await res.json()) as {
     valueRanges?: Array<{ values?: string[][] }>;
   };
   const vr = body.valueRanges ?? [];
   const memberHeader = vr[0]?.values?.[0] ?? [];
   const statsColA = (vr[1]?.values ?? []).map((r) => r[0] ?? "");
+  const resultRows = vr[2]?.values ?? [];
   return {
     memberRounds: extractRaidNumSet(memberHeader),
     statsRounds: extractRaidNumSet(statsColA),
+    resultRounds: extractRaidNumSetFromTable(resultRows),
   };
 }
 

@@ -258,20 +258,37 @@ export async function ensureRaidColumn(
     return { column: col, isNew: false, isPlaceholder: true };
   }
 
-  // 3) 둘 다 부재 → 마지막 비어있지 않은 컬럼 +1 위치에 신규 헤더
-  //    row에서 마지막 "N차" 패턴 매칭 위치 또는 마지막 비어있지 않은 위치 +1
+  // 3) 둘 다 부재 → 차수 순서 위치에 신규 컬럼 삽입
+  //    기존 회차 컬럼 중 raidNum 보다 큰 첫 컬럼 앞에 insertDimension(COLUMNS).
+  //    그런 컬럼이 없으면(최신 회차) 마지막 컬럼 +1 위치에 append.
+  const targetNum = Number(raidNum);
   let lastFilledIdx = -1;
-  for (let i = row.length - 1; i >= 0; i--) {
+  let insertIdx = -1; // raidNum 보다 큰 첫 회차 컬럼의 idx (row 기준, 0-based from startCol)
+  for (let i = 0; i < row.length; i++) {
     const h = (row[i] ?? "").trim();
-    if (h.length > 0) {
-      lastFilledIdx = i;
-      break;
+    if (h.length === 0) continue;
+    lastFilledIdx = i;
+    const m = h.match(/^(\d+)차$/);
+    if (m && insertIdx === -1 && Number(m[1]) > targetNum) {
+      insertIdx = i;
     }
   }
+
+  // 3a) 더 큰 회차 컬럼 존재 → 그 앞에 컬럼 삽입 (차수 순서 유지)
+  if (insertIdx !== -1) {
+    const gridColIdx = offset + insertIdx - 1; // 0-based grid column index
+    await insertColumnAt(spreadsheetId, gridColIdx, accessToken, fetchImpl);
+    // 삽입 후 그 위치(offset+insertIdx)가 신규 빈 컬럼이 됨
+    const newCol = columnNumberToLetter(offset + insertIdx);
+    await writeColumnHeader(spreadsheetId, newCol, raidNum, accessToken, fetchImpl);
+    // insertDimension inheritFromBefore:true 로 왼쪽(이전 회차 컬럼) 서식 자동 상속
+    return { column: newCol, isNew: true, isPlaceholder: false };
+  }
+
+  // 3b) 더 큰 회차 없음 → 마지막 컬럼 +1 에 append (기존 동작 + 스타일 복사)
   const newIdx = lastFilledIdx + 1;
   const newCol = columnNumberToLetter(offset + newIdx);
   await writeColumnHeader(spreadsheetId, newCol, raidNum, accessToken, fetchImpl);
-  // 인접한 기존 회차 컬럼 (lastFilledIdx) 의 스타일을 새 컬럼에 복사 — 테두리·정렬 등 일관 유지.
   if (lastFilledIdx >= 0) {
     const sourceCol = columnNumberToLetter(offset + lastFilledIdx);
     try {
@@ -283,11 +300,48 @@ export async function ensureRaidColumn(
         fetchImpl
       );
     } catch (e) {
-      // 스타일 복사 실패는 치명적 아님 — 데이터는 정상 입력됨. warning 만.
       console.warn("[NRA-SPA] copyColumnFormat 실패 (데이터는 정상):", e);
     }
   }
   return { column: newCol, isNew: true, isPlaceholder: false };
+}
+
+// 유니온 멤버 탭의 gridColIdx(0-based) 위치에 빈 컬럼 1개 삽입. 기존 컬럼은 오른쪽으로 밀림.
+// inheritFromBefore:true → 왼쪽 컬럼 서식 상속.
+async function insertColumnAt(
+  spreadsheetId: string,
+  gridColIdx: number,
+  accessToken: string,
+  fetchImpl: typeof fetch
+): Promise<void> {
+  const meta = await fetchMemberSheetMeta(spreadsheetId, accessToken, fetchImpl);
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`;
+  const res = await fetchImpl(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      requests: [
+        {
+          insertDimension: {
+            range: {
+              sheetId: meta.sheetId,
+              dimension: "COLUMNS",
+              startIndex: gridColIdx,
+              endIndex: gridColIdx + 1,
+            },
+            inheritFromBefore: gridColIdx > 0,
+          },
+        },
+      ],
+    }),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`COLUMN_INSERT_FAILED: HTTP ${res.status} ${t.slice(0, 120)}`);
+  }
 }
 
 export { RAID_NUM_HEADER_PATTERN };

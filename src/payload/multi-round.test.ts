@@ -1,9 +1,7 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { normalizePayload } from "./normalize";
 import { selectMissingRounds } from "./round-planner";
 import { prepareRoundBatchUpdate } from "../dryrun/calculator";
-import { applyMultiRoundWrite } from "../sheets/multi-round";
-import { computeFingerprint } from "../sheets/fingerprint";
 import type {
   GuildMember,
   NikkeRaidPayload,
@@ -212,75 +210,5 @@ describe("prepareRoundBatchUpdate — 회차 당시 레벨 우선", () => {
     });
     expect(plan.memberSyncroUpdates).toHaveLength(0);
     expect(plan.raidStatsRows).toHaveLength(1);
-  });
-});
-
-describe("applyMultiRoundWrite", () => {
-  it("fingerprint 1회 + backup 1회 + executeBatchUpdate N회 (mock)", async () => {
-    const calls: string[] = [];
-    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
-      const u = String(url);
-      if (u.includes("values:batchGet")) {
-        // fingerprint computeFingerprint — 두 헤더 행
-        calls.push("fingerprint-read");
-        return new Response(
-          JSON.stringify({
-            spreadsheetId: "s",
-            valueRanges: [
-              { range: "유니온 멤버!A1:Z1", values: [["가입 순서", "닉네임", "OO차"]] },
-              { range: "레이드 통계!A1:P1", values: [["회차"]] },
-            ],
-          }),
-          { status: 200 }
-        );
-      }
-      if (u.endsWith(":batchUpdate") && init?.method === "POST") {
-        const body = JSON.parse(String(init.body));
-        if (body.requests) {
-          calls.push("addSheet-backup");
-          return new Response(JSON.stringify({ replies: [{ addSheet: { properties: { title: "_backup_40", sheetId: 9 } } }] }), { status: 200 });
-        }
-      }
-      if (u.includes("values:batchGet?ranges")) {
-        calls.push("backup-read");
-        return new Response(JSON.stringify({ valueRanges: [] }), { status: 200 });
-      }
-      if (u.includes("/values/") || u.includes("values:batchUpdate")) {
-        calls.push("values");
-        return new Response(JSON.stringify({}), { status: 200 });
-      }
-      // grid info etc
-      calls.push("other:" + u.slice(0, 40));
-      return new Response(JSON.stringify({ sheets: [{ properties: { sheetId: 1, title: "유니온 멤버", gridProperties: { rowCount: 1000, columnCount: 30 } } }, { properties: { sheetId: 2, title: "레이드 통계", gridProperties: { rowCount: 5000, columnCount: 16 } } }] }), { status: 200 });
-    });
-
-    const mkPlan = (raidNum: string, startRow: number) => ({
-      raidNum,
-      backupTabName: `_backup_${raidNum}`,
-      raidStatsRange: `레이드 통계!A${startRow}:P${startRow}`,
-      raidStatsRows: [["x"]],
-      memberSyncroUpdates: [{ sheetRow: 2, syncroLevel: 500, column: "H" }],
-      syncroColumn: "H",
-      unmatchedNames: [],
-      isConfirmable: true,
-    });
-
-    // mock 헤더로 실제 계산되는 해시를 allowed 로 전달 (배선 검증 목적, 특정 해시값 아님)
-    const computed = await computeFingerprint("s", "tok", fetchImpl as unknown as typeof fetch);
-
-    const result = await applyMultiRoundWrite({
-      spreadsheetId: "s",
-      accessToken: "tok",
-      plans: [mkPlan("39", 101), mkPlan("40", 102)],
-      backupRaidNum: "40",
-      allowedFingerprints: [computed],
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      eventTarget: new EventTarget(),
-    });
-
-    expect(result.writtenRaidNums).toEqual(["39", "40"]);
-    expect(result.backupTabName).toBe("_backup_40");
-    // backup addSheet 정확히 1회
-    expect(calls.filter((c) => c === "addSheet-backup")).toHaveLength(1);
   });
 });
