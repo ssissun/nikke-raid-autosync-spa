@@ -92,6 +92,16 @@ describe("insertStatsRowsOrdered", () => {
     expect(inserts[0].startIndex).toBe(3);
     expect(puts[0].range).toBe("레이드 통계!A4:P4");
   });
+
+  it("빈 시트 — 'OO차 레이드 통계' placeholder 행 아래(row 3)에 삽입", async () => {
+    // 헤더(row1) + "OO차 레이드 통계" placeholder(row2). 회차 라벨 행 없음.
+    const statsColA = ["회차", "OO차 레이드 통계"];
+    const { fetchImpl, inserts, puts } = makeFetch({ statsColA });
+    await insertStatsRowsOrdered("s", "40", [["40차", "A"]], "tok", fetchImpl);
+    // placeholder(index 1) 아래 = index 2 (row 3)에 삽입 — placeholder 보존
+    expect(inserts[0].startIndex).toBe(2);
+    expect(puts[0].range).toBe("레이드 통계!A3:P3");
+  });
 });
 
 describe("insertResultRowOrdered", () => {

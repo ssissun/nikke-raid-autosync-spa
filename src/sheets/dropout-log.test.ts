@@ -4,17 +4,42 @@ import { readDropoutTab, recordDropouts } from "./dropout-log";
 const DROPOUT = "탈퇴자 레벨 기록";
 
 // 탈퇴자 탭 grid 를 들고 read/insert/header-put/batchUpdate 에 반응하는 stateful mock.
-function makeFetch(opts: { present?: boolean; grid?: string[][] }) {
+function makeFetch(opts: {
+  present?: boolean;
+  grid?: string[][];
+  gridRows?: number;
+  gridCols?: number;
+}) {
   const present = opts.present ?? true;
   const grid = (opts.grid ?? []).map((r) => [...r]);
+  const gridRows = opts.gridRows ?? 1000;
+  const gridCols = opts.gridCols ?? 100;
   const batchData: Array<{ range: string; values: string[][] }> = [];
   const inserts: Array<{ startIndex: number }> = [];
   const headerPuts: Array<{ range: string; value: string }> = [];
+  const appends: Array<{ dimension: string; length: number }> = [];
 
   const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
     const u = decodeURIComponent(String(url));
     const method = init?.method ?? "GET";
 
+    // ensureSheetGrid 의 grid props 조회 (gridProperties 포함)
+    if (u.includes("gridProperties")) {
+      return new Response(
+        JSON.stringify({
+          sheets: [
+            {
+              properties: {
+                sheetId: 9,
+                title: DROPOUT,
+                gridProperties: { rowCount: gridRows, columnCount: gridCols },
+              },
+            },
+          ],
+        }),
+        { status: 200 }
+      );
+    }
     if (u.includes("fields=sheets(properties(sheetId,title))")) {
       const sheets: Array<{ properties: { sheetId: number; title: string } }> = [
         { properties: { sheetId: 1, title: "유니온 멤버" } },
@@ -36,6 +61,8 @@ function makeFetch(opts: { present?: boolean; grid?: string[][] }) {
         for (const row of grid) row.splice(at, 0, "");
         return new Response(JSON.stringify({}), { status: 200 });
       }
+      const app = body.requests?.[0]?.appendDimension;
+      if (app) appends.push({ dimension: app.dimension, length: app.length });
       return new Response(JSON.stringify({}), { status: 200 });
     }
     // 헤더 셀 PUT (신규 컬럼 헤더 작성)
@@ -62,7 +89,7 @@ function makeFetch(opts: { present?: boolean; grid?: string[][] }) {
     return new Response(JSON.stringify({}), { status: 200 });
   });
 
-  return { fetchImpl: fetchImpl as unknown as typeof fetch, batchData, inserts, headerPuts };
+  return { fetchImpl: fetchImpl as unknown as typeof fetch, batchData, inserts, headerPuts, appends };
 }
 
 const HEADER = ["닉네임", "35차", "37차", "40차"];
@@ -141,5 +168,28 @@ describe("recordDropouts", () => {
     expect(headerPuts[0].value).toBe("37차");
     // 신규 행: 헤더가 [닉네임,35차,37차,40차] 가 된 뒤 옛멤버 행 추가
     expect(batchData[0].values[0]).toEqual(["옛멤버", "", "480", ""]);
+  });
+
+  it("작은 grid(2행)에 다수 탈퇴자 append 시 grid 행 확장 (regression)", async () => {
+    // 헤더만 + grid rowCount=2. 탈퇴자 2명 → 행 2·3 append. 행 3 위해 grid 사전 확장 필요.
+    const { fetchImpl, appends, batchData } = makeFetch({
+      present: true,
+      grid: [HEADER], // 4컬럼
+      gridRows: 2,
+      gridCols: 14,
+    });
+    const entries = new Map([
+      ["옛멤버A", new Map([["40", 500]])],
+      ["옛멤버B", new Map([["40", 520]])],
+    ]);
+    await recordDropouts("s", "t", entries, "fillEmpty", fetchImpl);
+    // requiredRows 3 - currentRows 2 = 1행 ROWS 확장
+    const rowAppend = appends.find((a) => a.dimension === "ROWS");
+    expect(rowAppend).toBeDefined();
+    expect(rowAppend!.length).toBe(1);
+    // 두 탈퇴자 행 모두 기록 (data 2건)
+    expect(batchData).toHaveLength(2);
+    expect(batchData[0].range).toBe(`${DROPOUT}!A2:D2`);
+    expect(batchData[1].range).toBe(`${DROPOUT}!A3:D3`);
   });
 });

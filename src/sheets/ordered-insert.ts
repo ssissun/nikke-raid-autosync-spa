@@ -111,20 +111,22 @@ async function writeValues(
 
 // labels 중 round > target 인 첫 데이터 행의 0-based grid index. 없으면 마지막 데이터 행 +1.
 // labelColIdx: 회차 라벨이 있는 컬럼 인덱스(0-based). headerRows: 헤더 행 수(보통 1).
+// 회차 라벨 행이 하나도 없어도(빈 시트의 "OO차 …" placeholder 등) 마지막으로 채워진 행 뒤에 삽입.
 function findInsertRowIndex(
   rows: string[][],
   labelColIdx: number,
   headerRows: number,
   target: number
 ): number {
-  let lastDataIdx = headerRows - 1;
+  let lastFilledIdx = headerRows - 1;
   for (let i = headerRows; i < rows.length; i++) {
-    const r = parseRoundNum(rows[i]?.[labelColIdx]);
-    if (r === null) continue; // 빈 행/비라벨 → skip
-    lastDataIdx = i;
-    if (r > target) return i; // 이 행 앞에 삽입
+    const cell = String(rows[i]?.[labelColIdx] ?? "").trim();
+    if (cell.length === 0) continue; // 완전 빈 행 → 위치 추적 안 함
+    lastFilledIdx = i; // 비어있지 않은 행(회차 라벨 + placeholder 모두 포함)
+    const r = parseRoundNum(cell);
+    if (r !== null && r > target) return i; // 더 큰 회차 라벨 앞에 삽입
   }
-  return lastDataIdx + 1; // 더 큰 회차 없음 → 마지막 데이터 뒤
+  return lastFilledIdx + 1; // 마지막으로 채워진 행 뒤 (placeholder 보존, 그 아래 삽입)
 }
 
 /**

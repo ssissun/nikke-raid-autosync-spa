@@ -2,6 +2,8 @@
 // 탭 구조: A열 닉네임 | B열~ 회차 컬럼(29차, 30차, …). 닉네임 기준.
 // '탈퇴자 레벨 기록' 탭이 없는 시트는 모든 함수가 no-op(null 반환) — 하위호환.
 
+import { ensureSheetGrid } from "./grid";
+
 const DROPOUT_SHEET = "탈퇴자 레벨 기록";
 const ROUND_RE = /^(\d+)차$/;
 
@@ -213,6 +215,9 @@ export async function recordDropouts(
   }
 
   if (valueUpdates.length > 0) {
+    // grid 사전 확장 — 새 행/열이 기존 grid 한계를 넘으면 400(exceeds grid limits) 발생.
+    // (탈퇴자 탭이 작은 grid(예: 2행)로 만들어진 경우 다수 탈퇴자 append 시 필수)
+    await ensureSheetGrid(spreadsheetId, DROPOUT_SHEET, appendRow - 1, tab.colCount, token, fetchImpl);
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values:batchUpdate`;
     const res = await fetchImpl(url, {
       method: "POST",
