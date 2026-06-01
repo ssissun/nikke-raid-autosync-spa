@@ -36,12 +36,12 @@ import {
   ensureRaidColumn,
   guessNextRaidNum,
   migrateToMemberId,
-  readExistingRaidNums,
+  readExistingRaidNumsByTab,
   writeRaidData,
 } from "./sheets";
 import { applyMemberSync, type AutoSyncResult } from "./sync/auto-sync";
 import { normalizePayload, type NormalizedMultiPayload } from "./payload/normalize";
-import { selectMissingRounds } from "./payload/round-planner";
+import { selectMissingRounds, type RoundTarget } from "./payload/round-planner";
 import type { NikkeRaidPayload, ProcessedRaidRow } from "./types";
 import type { NicknameChange } from "./matching/types";
 
@@ -100,12 +100,14 @@ interface RoundPreview {
   raidNum: string;
   raidStatsRowsCount: number;
   bossNames: string[];
+  missingStats: boolean; // 레이드 통계 행 추가 예정
+  missingMember: boolean; // 유니온 멤버 싱크로 컬럼 추가 예정
 }
 
 // 변경 미리보기 (2-button 흐름) — payload 수신 시 자동 계산.
 interface ChangesPreview {
   targetRaidNums: string[]; // 처리 대상 회차 (오름차순)
-  alreadyInSheet: string[]; // 시트에 이미 있어 skip
+  alreadyInSheet: string[]; // 두 탭 모두 이미 있어 skip
   unavailableButRequested: string[]; // 가용 목록엔 있으나 데이터 없는 회차
   rounds: RoundPreview[]; // 회차별 요약
   // 멤버 변동(auto-sync)은 현재 멤버 기준 1회 — 회차별 아님
@@ -117,6 +119,7 @@ interface ChangesPreview {
 }
 let lastChangesPreview: ChangesPreview | null = null;
 let lastNormalized: NormalizedMultiPayload | null = null; // previewChanges → applyAllChanges 전달
+let lastTargets: RoundTarget[] = []; // 탭별 누락 플래그 포함 처리 대상
 let nonParticipatingNicknames: string[] | null = null;
 
 // 신뢰 다이얼로그 (Hybrid fingerprint — BUILT_IN 미일치 시 사용자 옵트인)
@@ -270,49 +273,56 @@ async function diagnoseSheet(): Promise<SheetDiagnostic | null> {
   }
 }
 
-// 시트 기존 회차 집합 — userscript 백필 핸드셰이크(from + need) 계산용. autoDiagnose 시 캐시.
-let lastExistingRounds: Set<string> = new Set();
-let lastMaxExistingRound: number | null = null;
+// 시트 기존 회차 — 탭별 분리 캐시. autoDiagnose 시 갱신. 누락 판정 + 백필 핸드셰이크용.
+let lastStatsRounds: Set<string> = new Set();
+let lastMemberRounds: Set<string> = new Set();
 
 async function refreshExistingRounds(): Promise<void> {
   const token = getAccessToken();
   const sheetId = getSheetId();
   if (token === null || sheetId === null) {
-    lastExistingRounds = new Set();
-    lastMaxExistingRound = null;
+    lastStatsRounds = new Set();
+    lastMemberRounds = new Set();
     return;
   }
   try {
-    const existing = await readExistingRaidNums(sheetId, token);
-    lastExistingRounds = existing;
-    let max = 0;
-    for (const n of existing) {
-      const v = Number(n);
-      if (Number.isFinite(v) && v > max) max = v;
-    }
-    lastMaxExistingRound = max > 0 ? max : null;
+    const { statsRounds, memberRounds } = await readExistingRaidNumsByTab(
+      sheetId,
+      token
+    );
+    lastStatsRounds = statsRounds;
+    lastMemberRounds = memberRounds;
   } catch (e) {
-    console.warn("[NRA-SPA] readExistingRaidNums 실패:", e);
-    lastExistingRounds = new Set();
-    lastMaxExistingRound = null;
+    console.warn("[NRA-SPA] readExistingRaidNumsByTab 실패:", e);
+    lastStatsRounds = new Set();
+    lastMemberRounds = new Set();
   }
 }
 
-// interior gap — 시트 기존 회차 범위 [min,max] 안에서 빠진 회차 (오름차순).
-// 최근 MAX_GAP_NEED 개로 제한 (블라가 과거 회차 미제공 → 오래된 gap 은 어차피 빈 응답).
+// userscript 가 데이터를 fetch 해야 하는 회차 = 두 탭 중 한 곳에라도 누락된 회차.
+// "완전한 회차"(두 탭 모두 존재)는 fetch 불필요. 범위 [min,max] 내 불완전 회차를 need 로,
+// max+1 이상 tail 은 from 으로 전달. 최근 MAX_GAP_NEED 개 제한 (블라 과거 미제공).
 const MAX_GAP_NEED = 15;
-function computeInteriorGaps(existing: ReadonlySet<string>): number[] {
-  const nums = [...existing].map(Number).filter((n) => Number.isFinite(n) && n > 0);
-  if (nums.length < 2) return [];
-  const min = Math.min(...nums);
-  const max = Math.max(...nums);
-  const present = new Set(nums);
-  const gaps: number[] = [];
-  for (let r = min + 1; r < max; r++) {
-    if (!present.has(r)) gaps.push(r);
+function computeNeededRounds(
+  statsRounds: ReadonlySet<string>,
+  memberRounds: ReadonlySet<string>
+): { from: number | null; need: number[] } {
+  const union = new Set<number>();
+  for (const n of [...statsRounds, ...memberRounds]) {
+    const v = Number(n);
+    if (Number.isFinite(v) && v > 0) union.add(v);
   }
-  // 최근(높은) gap 우선 — 블라 제공 한도 내에서만 의미
-  return gaps.slice(-MAX_GAP_NEED);
+  if (union.size === 0) return { from: null, need: [] };
+  const max = Math.max(...union);
+  const min = Math.min(...union);
+  const isComplete = (r: number): boolean =>
+    statsRounds.has(String(r)) && memberRounds.has(String(r));
+  // [min,max] 내에서 두 탭 모두 갖추지 못한 회차 (= 한쪽만 있거나 둘 다 없는 hole)
+  const need: number[] = [];
+  for (let r = min; r <= max; r++) {
+    if (!isComplete(r)) need.push(r);
+  }
+  return { from: max + 1, need: need.slice(-MAX_GAP_NEED) };
 }
 
 async function autoDiagnose(): Promise<void> {
@@ -452,13 +462,12 @@ function openBlablalinkRaidPage(): void {
   //   시트가 비었으면 from 생략 → userscript 가 가용한 과거 회차까지 백필.
   // &need={a,b} — interior gap 회차 (시트 기존 범위 안에서 빠진 회차). gap-aware 백필.
   //   둘 다 블라 제공 한도 내에서만 동작 (빈 응답 회차는 userscript 가 자동 skip).
-  const fromRound =
-    lastMaxExistingRound !== null && lastMaxExistingRound > 0
-      ? lastMaxExistingRound + 1
-      : null;
-  const gaps = computeInteriorGaps(lastExistingRounds);
+  const { from: fromRound, need } = computeNeededRounds(
+    lastStatsRounds,
+    lastMemberRounds
+  );
   const fromParam = fromRound !== null ? `&from=${fromRound}` : "";
-  const needParam = gaps.length > 0 ? `&need=${gaps.join(",")}` : "";
+  const needParam = need.length > 0 ? `&need=${need.join(",")}` : "";
   const w = window.open(
     `https://www.blablalink.com/shiftyspad/union-raid?lang=ko&nra=1${fromParam}${needParam}`,
     "blablalink-union-raid"
@@ -711,9 +720,12 @@ async function previewChanges(): Promise<void> {
     const classResult = getSyncClassification();
     if (classResult === null) return;
 
-    // 2) 시트 기존 회차 → 누락 회차 선별
-    const existing = await readExistingRaidNums(sheetId, token);
-    let selection = selectMissingRounds(normalized, existing);
+    // 2) 시트 기존 회차 → 탭별 누락 회차 선별
+    const { statsRounds, memberRounds } = await readExistingRaidNumsByTab(
+      sheetId,
+      token
+    );
+    let selection = selectMissingRounds(normalized, statsRounds, memberRounds);
 
     // fallback: 회차 정보 전무(레거시 single, raidNum 부재로 round 0개) → guessNextRaidNum
     if (
@@ -734,12 +746,16 @@ async function previewChanges(): Promise<void> {
         };
         lastNormalized = { ...normalized, rounds: [fallbackRound] };
         selection = {
-          targetRounds: [fallbackRound],
-          alreadyInSheet: [],
+          targetRounds: [
+            { round: fallbackRound, missingStats: true, missingMember: true },
+          ],
+          alreadyComplete: [],
           unavailableButRequested: [],
         };
       }
     }
+
+    lastTargets = selection.targetRounds;
 
     const layout =
       lastDiagnostic?.guessedFormat === "pre-migration"
@@ -747,13 +763,15 @@ async function previewChanges(): Promise<void> {
         : "post-migration";
 
     lastChangesPreview = {
-      targetRaidNums: selection.targetRounds.map((r) => r.raidNum),
-      alreadyInSheet: selection.alreadyInSheet,
+      targetRaidNums: selection.targetRounds.map((t) => t.round.raidNum),
+      alreadyInSheet: selection.alreadyComplete,
       unavailableButRequested: selection.unavailableButRequested,
-      rounds: selection.targetRounds.map((r) => ({
-        raidNum: r.raidNum,
-        raidStatsRowsCount: r.raid.length,
-        bossNames: bossNamesOf(r.raid),
+      rounds: selection.targetRounds.map((t) => ({
+        raidNum: t.round.raidNum,
+        raidStatsRowsCount: t.round.raid.length,
+        bossNames: bossNamesOf(t.round.raid),
+        missingStats: t.missingStats,
+        missingMember: t.missingMember,
       })),
       leavingNicknames: classResult.unmatchedSheetNicknames.map((u) => u.nickname),
       joiningNicknames: classResult.unmatchedPayloadMembers.map((m) => m.nickname),
@@ -856,23 +874,27 @@ async function applyAllChanges(): Promise<void> {
     const refreshedClass = getSyncClassification();
     if (refreshedClass === null) throw new Error("재매칭 결과 부재");
 
-    // 2) 회차 루프 — ensureRaidColumn 순차 + prepareRoundBatchUpdate (lastRaidRow 누적)
-    const roundByNum = new Map(normalized.rounds.map((r) => [r.raidNum, r]));
+    // 2) 회차 루프 — 탭별 누락 플래그에 따라 부분 쓰기 (lastRaidRow 누적)
+    //    missingMember 일 때만 ensureRaidColumn (멤버 컬럼 확보), missingStats 일 때만 통계 행 추가.
     let cumLastRaidRow = await getLastRaidRow(sheetId, token);
     const plans: BatchUpdatePlan[] = [];
-    for (const raidNum of preview.targetRaidNums) {
-      const round = roundByNum.get(raidNum);
-      if (round === undefined) continue;
-      const resolution = await ensureRaidColumn(
-        sheetId,
-        raidNum,
-        token,
-        fetch,
-        preview.layout
-      );
+    for (const target of lastTargets) {
+      const raidNum = target.round.raidNum;
+      // 멤버 컬럼이 필요할 때만 ensureRaidColumn (통계만 누락이면 컬럼 이미 존재 → 건드릴 필요 없음)
+      let syncroColumn = "";
+      if (target.missingMember) {
+        const resolution = await ensureRaidColumn(
+          sheetId,
+          raidNum,
+          token,
+          fetch,
+          preview.layout
+        );
+        syncroColumn = resolution.column;
+      }
       // index 0 라벨을 `${raidNum}차` 로 정규화
       const targetLabel = `${raidNum}차`;
-      const normalizedRaid = round.raid.map((row) => {
+      const normalizedRaid = target.round.raid.map((row) => {
         const next = [...row] as ProcessedRaidRow;
         next[0] = targetLabel;
         return next;
@@ -882,10 +904,12 @@ async function applyAllChanges(): Promise<void> {
         alerts: refreshedClass.alerts,
         raidNum,
         raidRows: normalizedRaid,
-        roundSyncroLevels: round.memberSyncroLevels,
+        roundSyncroLevels: target.round.memberSyncroLevels,
         members: normalized.members,
         lastRaidRow: cumLastRaidRow,
-        syncroColumn: resolution.column,
+        syncroColumn,
+        includeStats: target.missingStats,
+        includeMember: target.missingMember,
       });
       plans.push(plan);
       cumLastRaidRow += plan.raidStatsRows.length;
@@ -924,7 +948,7 @@ async function applyAllChanges(): Promise<void> {
       .map((n) => Number(n))
       .reduce((a, b) => Math.max(a, b), 0)
       .toString();
-    const latestRound = roundByNum.get(latestNum);
+    const latestRound = normalized.rounds.find((r) => r.raidNum === latestNum);
     if (latestRound) {
       const participating = new Set<string>();
       for (const row of latestRound.raid) {
@@ -1091,8 +1115,9 @@ function renderApp(): void {
     : "";
 
   const preview = lastChangesPreview;
+  // 통계 행은 missingStats 회차만 추가됨
   const totalNewRows = preview
-    ? preview.rounds.reduce((a, r) => a + r.raidStatsRowsCount, 0)
+    ? preview.rounds.reduce((a, r) => a + (r.missingStats ? r.raidStatsRowsCount : 0), 0)
     : 0;
   const noTarget = preview !== null && preview.targetRaidNums.length === 0;
   const previewBlock =
@@ -1120,7 +1145,13 @@ function renderApp(): void {
           <details>
             <summary>회차별 상세 (${preview.rounds.length}개)</summary>
             <ul class="changes">
-              ${preview.rounds.map((r) => `<li><strong>${escapeHtml(r.raidNum)}차</strong>: ${r.raidStatsRowsCount}행 · 보스 ${r.bossNames.length}종 (${r.bossNames.map((b) => escapeHtml(b)).join(" · ")})</li>`).join("")}
+              ${preview.rounds.map((r) => {
+                const tabs = [
+                  r.missingStats ? `레이드 통계 +${r.raidStatsRowsCount}행` : null,
+                  r.missingMember ? "유니온 멤버 싱크로 컬럼" : null,
+                ].filter(Boolean).join(" + ");
+                return `<li><strong>${escapeHtml(r.raidNum)}차</strong>: ${escapeHtml(tabs)} · 보스 ${r.bossNames.length}종 (${r.bossNames.map((b) => escapeHtml(b)).join(" · ")})</li>`;
+              }).join("")}
             </ul>
           </details>
           <p class="meta">⚠️ 과거 회차의 싱크로 레벨은 현재 잔류 멤버 기준으로만 기록됩니다 (그 시점 탈퇴 멤버 제외).</p>
@@ -1336,6 +1367,7 @@ function bootstrap(): void {
     // 2-button 흐름 — payload 수신 후 자동 매칭 + 변경사항 계산
     lastChangesPreview = null;
     lastNormalized = null;
+    lastTargets = [];
     nonParticipatingNicknames = null;
     lastBatchPlan = null;
     lastAutoSync = null;

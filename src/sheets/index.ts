@@ -96,5 +96,7 @@ export {
   guessFromMemberHeader,
   guessFromRaidStats,
   readExistingRaidNums,
+  readExistingRaidNumsByTab,
   extractRaidNumSet,
 } from "./guess-raid-num";
+export type { ExistingRaidNumsByTab } from "./guess-raid-num";

@@ -155,20 +155,28 @@ export interface PrepareRoundArgs {
   members: readonly GuildMember[];
   lastRaidRow: number; // 누적 — 이전 회차 행 수 반영
   syncroColumn: string;
+  // 탭별 누락 판정 — 해당 탭에 누락된 경우만 채움(멱등). 미지정 시 둘 다 true(레거시 동작).
+  includeStats?: boolean; // 레이드 통계 행 추가
+  includeMember?: boolean; // 유니온 멤버 싱크로 컬럼 채움
 }
 
 /**
  * 회차 1개 분량 → BatchUpdatePlan. 다회차 오케스트레이터가 회차별로 호출.
  * raidRows 는 호출 측에서 index0 라벨을 `${raidNum}차` 로 정규화한 상태여야 함.
+ * includeStats/includeMember 로 탭별 부분 쓰기 — 이미 있는 탭은 건너뛴다(통계 행 중복 방지).
  */
 export function prepareRoundBatchUpdate(args: PrepareRoundArgs): BatchUpdatePlan {
-  const raidStatsRows = raidRowsToStrings(args.raidRows);
-  const memberSyncroUpdates = calculateMemberSyncroUpdates(
-    args.classification,
-    args.members,
-    args.syncroColumn,
-    args.roundSyncroLevels
-  );
+  const includeStats = args.includeStats ?? true;
+  const includeMember = args.includeMember ?? true;
+  const raidStatsRows = includeStats ? raidRowsToStrings(args.raidRows) : [];
+  const memberSyncroUpdates = includeMember
+    ? calculateMemberSyncroUpdates(
+        args.classification,
+        args.members,
+        args.syncroColumn,
+        args.roundSyncroLevels
+      )
+    : [];
 
   const unmatchedNames: string[] = [];
   for (const a of args.alerts) {

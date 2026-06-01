@@ -84,7 +84,7 @@ describe("selectMissingRounds", () => {
     members: [member("m1", "A", 540)],
     meta: { guildId: "g", areaId: "83" },
   };
-  it("시트에 없는 회차만 target (오름차순)", () => {
+  it("두 탭 모두 없는 회차만 target (오름차순)", () => {
     const n = {
       ...base,
       availableRaidNums: ["38", "39", "40"],
@@ -94,9 +94,23 @@ describe("selectMissingRounds", () => {
         { raidNum: "38", raid: [], memberSyncroLevels: {} },
       ],
     };
-    const sel = selectMissingRounds(n, new Set(["38"]));
-    expect(sel.targetRounds.map((r) => r.raidNum)).toEqual(["39", "40"]);
-    expect(sel.alreadyInSheet).toEqual(["38"]);
+    // 38 은 두 탭 모두 존재 → skip
+    const sel = selectMissingRounds(n, new Set(["38"]), new Set(["38"]));
+    expect(sel.targetRounds.map((t) => t.round.raidNum)).toEqual(["39", "40"]);
+    expect(sel.alreadyComplete).toEqual(["38"]);
+  });
+  it("한쪽 탭만 누락 — 해당 탭 플래그만 true", () => {
+    const n = {
+      ...base,
+      availableRaidNums: ["40"],
+      rounds: [{ raidNum: "40", raid: [], memberSyncroLevels: {} }],
+    };
+    // 레이드 통계엔 40 있음, 유니온 멤버엔 없음 → missingMember 만 true
+    const sel = selectMissingRounds(n, new Set(["40"]), new Set());
+    expect(sel.targetRounds).toHaveLength(1);
+    expect(sel.targetRounds[0].missingStats).toBe(false);
+    expect(sel.targetRounds[0].missingMember).toBe(true);
+    expect(sel.alreadyComplete).toEqual([]);
   });
   it("가용하나 데이터 없는 회차는 unavailableButRequested", () => {
     const n = {
@@ -104,19 +118,21 @@ describe("selectMissingRounds", () => {
       availableRaidNums: ["38", "39", "40"],
       rounds: [{ raidNum: "40", raid: [], memberSyncroLevels: {} }],
     };
-    const sel = selectMissingRounds(n, new Set());
-    expect(sel.targetRounds.map((r) => r.raidNum)).toEqual(["40"]);
+    const sel = selectMissingRounds(n, new Set(), new Set());
+    expect(sel.targetRounds.map((t) => t.round.raidNum)).toEqual(["40"]);
+    expect(sel.targetRounds[0].missingStats).toBe(true);
+    expect(sel.targetRounds[0].missingMember).toBe(true);
     expect(sel.unavailableButRequested.sort()).toEqual(["38", "39"]);
   });
-  it("전부 시트에 있으면 target 0", () => {
+  it("두 탭 모두 있으면 target 0 (alreadyComplete)", () => {
     const n = {
       ...base,
       availableRaidNums: ["40"],
       rounds: [{ raidNum: "40", raid: [], memberSyncroLevels: {} }],
     };
-    const sel = selectMissingRounds(n, new Set(["40"]));
+    const sel = selectMissingRounds(n, new Set(["40"]), new Set(["40"]));
     expect(sel.targetRounds).toHaveLength(0);
-    expect(sel.alreadyInSheet).toEqual(["40"]);
+    expect(sel.alreadyComplete).toEqual(["40"]);
   });
 });
 
@@ -161,6 +177,41 @@ describe("prepareRoundBatchUpdate — 회차 당시 레벨 우선", () => {
       syncroColumn: "I",
     });
     expect(plan.raidStatsRange).toBe("레이드 통계!A201:P202");
+  });
+
+  it("includeStats=false → 통계 행 0 (멱등, 멤버만 채움)", () => {
+    const plan = prepareRoundBatchUpdate({
+      classification,
+      alerts: [],
+      raidNum: "40",
+      raidRows: [row("40차", "A", "boss")],
+      roundSyncroLevels: {},
+      members,
+      lastRaidRow: 100,
+      syncroColumn: "H",
+      includeStats: false,
+      includeMember: true,
+    });
+    expect(plan.raidStatsRows).toHaveLength(0);
+    expect(plan.raidStatsRange).toBe("");
+    expect(plan.memberSyncroUpdates.length).toBeGreaterThan(0);
+  });
+
+  it("includeMember=false → 멤버 0 (통계만 추가)", () => {
+    const plan = prepareRoundBatchUpdate({
+      classification,
+      alerts: [],
+      raidNum: "40",
+      raidRows: [row("40차", "A", "boss")],
+      roundSyncroLevels: {},
+      members,
+      lastRaidRow: 100,
+      syncroColumn: "H",
+      includeStats: true,
+      includeMember: false,
+    });
+    expect(plan.memberSyncroUpdates).toHaveLength(0);
+    expect(plan.raidStatsRows).toHaveLength(1);
   });
 });
 

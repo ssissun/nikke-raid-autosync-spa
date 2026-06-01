@@ -32,15 +32,21 @@ export function extractRaidNumSet(values: readonly string[]): Set<string> {
   return set;
 }
 
+export interface ExistingRaidNumsByTab {
+  memberRounds: Set<string>; // 유니온 멤버 회차 컬럼 헤더에 존재
+  statsRounds: Set<string>; // 레이드 통계 ColA 회차 라벨에 존재
+}
+
 /**
- * 시트에 이미 존재하는 회차 집합 — 유니온 멤버 헤더 + 레이드 통계 ColA 합집합.
- * 다회차 백필 시 "누락 회차" 판정 기준.
+ * 시트 기존 회차를 탭별로 분리하여 반환 — 탭별 누락 판정용.
+ *   memberRounds: 유니온 멤버 헤더 row1 의 "N차" 컬럼
+ *   statsRounds:  레이드 통계 ColA 의 "N차" 행 라벨
  */
-export async function readExistingRaidNums(
+export async function readExistingRaidNumsByTab(
   spreadsheetId: string,
   accessToken: string,
   fetchImpl: typeof fetch = fetch
-): Promise<Set<string>> {
+): Promise<ExistingRaidNumsByTab> {
   const ranges = [
     encodeURIComponent("유니온 멤버!A1:Z1"),
     encodeURIComponent("레이드 통계!A1:A2000"),
@@ -49,15 +55,35 @@ export async function readExistingRaidNums(
   const res = await fetchImpl(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
-  if (!res.ok) return new Set();
+  if (!res.ok) return { memberRounds: new Set(), statsRounds: new Set() };
   const body = (await res.json()) as {
     valueRanges?: Array<{ values?: string[][] }>;
   };
   const vr = body.valueRanges ?? [];
   const memberHeader = vr[0]?.values?.[0] ?? [];
   const statsColA = (vr[1]?.values ?? []).map((r) => r[0] ?? "");
-  const set = extractRaidNumSet(memberHeader);
-  for (const n of extractRaidNumSet(statsColA)) set.add(n);
+  return {
+    memberRounds: extractRaidNumSet(memberHeader),
+    statsRounds: extractRaidNumSet(statsColA),
+  };
+}
+
+/**
+ * 시트에 이미 존재하는 회차 집합 — 유니온 멤버 헤더 + 레이드 통계 ColA 합집합.
+ * (레거시 / fallback 용. 탭별 판정은 readExistingRaidNumsByTab.)
+ */
+export async function readExistingRaidNums(
+  spreadsheetId: string,
+  accessToken: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<Set<string>> {
+  const { memberRounds, statsRounds } = await readExistingRaidNumsByTab(
+    spreadsheetId,
+    accessToken,
+    fetchImpl
+  );
+  const set = new Set(memberRounds);
+  for (const n of statsRounds) set.add(n);
   return set;
 }
 
