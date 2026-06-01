@@ -190,7 +190,8 @@ main > section.error p {
   margin: 0;
 }
 
-main > section.trust {
+main > section.trust,
+main > section.us-version-warn {
   background: var(--warning-bg);
   border-color: var(--warning);
 }

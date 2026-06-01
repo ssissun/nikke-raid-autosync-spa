@@ -28,6 +28,15 @@ export function handleMessage(event: MessageEvent): void {
   }
 
   const payload: NikkeRaidPayload = data;
+
+  // 유저스크립트 버전 감지 — 모든 유효 메시지에 piggyback 된 scriptVersion 추출 (구버전은 없음 → null).
+  const sv = (payload as { scriptVersion?: unknown }).scriptVersion;
+  window.dispatchEvent(
+    new CustomEvent("userscriptVersionDetected", {
+      detail: { version: typeof sv === "string" ? sv : null },
+    })
+  );
+
   switch (payload.type) {
     case "nikke-raid-data":
     case "nikke-raid-multi":
