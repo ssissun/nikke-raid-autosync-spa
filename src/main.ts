@@ -3,6 +3,7 @@
 import "./style.css";
 import { getAccessToken, getEmail, getTokenExpiry, isAuthenticated, login, logout } from "./auth";
 import { GOOGLE_CLIENT_ID } from "./config";
+import { isUserscriptOutdated } from "./version";
 import {
   clearSyncClassification,
   getSyncClassification,
@@ -79,7 +80,7 @@ declare global {
 let lastError: string | null = null;
 
 // 유저스크립트 버전 감지 — 수신 payload 의 scriptVersion 과 권장 버전 비교. 다르면(또는 미보고 구버전) 업그레이드 배너.
-const EXPECTED_USERSCRIPT_VERSION = "2.4.5";
+const EXPECTED_USERSCRIPT_VERSION = "2.4.6";
 let userscriptDetected = false;
 let detectedUserscriptVersion: string | null = null;
 
@@ -1388,7 +1389,7 @@ function renderApp(): void {
       : "";
 
   const versionWarningBlock =
-    userscriptDetected && detectedUserscriptVersion !== EXPECTED_USERSCRIPT_VERSION
+    userscriptDetected && isUserscriptOutdated(detectedUserscriptVersion, EXPECTED_USERSCRIPT_VERSION)
       ? `<div class="us-version-floater" role="alert">
           <p class="uvf-title">⚠️ 유저스크립트 업그레이드 권장</p>
           <p>설치됨: <strong>${detectedUserscriptVersion !== null ? escapeHtml("v" + detectedUserscriptVersion) : "구버전 (미보고)"}</strong> · 권장: <strong>v${EXPECTED_USERSCRIPT_VERSION}</strong></p>
