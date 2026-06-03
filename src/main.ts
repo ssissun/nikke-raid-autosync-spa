@@ -4,13 +4,25 @@ import "./style.css";
 import { getAccessToken, getEmail, getTokenExpiry, isAuthenticated, login, logout } from "./auth";
 import { GOOGLE_CLIENT_ID } from "./config";
 import { isUserscriptOutdated } from "./version";
+import { escapeHtml } from "./util/html";
+import {
+  renderDiffMember,
+  renderNicknameChange,
+  type PreviewMember,
+} from "./preview/diff";
 import {
   clearSyncClassification,
   getSyncClassification,
   startClassificationFlow,
   type ClassificationResult,
   SyncError,
+  MIGRATION_BLOCKED,
 } from "./matching";
+import {
+  AUTOFILL_CAPACITY,
+  extractNicknames,
+  writeAutofill,
+} from "./autofill/autofill";
 import { openPicker } from "./picker";
 import {
   clearPayload,
@@ -46,7 +58,11 @@ import { reverseMigrateColB, writeMemberIdTab } from "./sheets/member-id-tab";
 import { readDropoutTab, recordDropouts } from "./sheets/dropout-log";
 import { normalizePayload, type NormalizedMultiPayload } from "./payload/normalize";
 import { selectMissingRounds, type RoundTarget } from "./payload/round-planner";
-import type { NikkeRaidPayload, ProcessedRaidRow } from "./types";
+import type {
+  NikkeRaidPayload,
+  NraProgressMessage,
+  ProcessedRaidRow,
+} from "./types";
 import type { NicknameChange } from "./matching/types";
 
 const APP_VERSION = "0.1.0";
@@ -80,7 +96,7 @@ declare global {
 let lastError: string | null = null;
 
 // 유저스크립트 버전 감지 — 수신 payload 의 scriptVersion 과 권장 버전 비교. 다르면(또는 미보고 구버전) 업그레이드 배너.
-const EXPECTED_USERSCRIPT_VERSION = "2.4.6";
+const EXPECTED_USERSCRIPT_VERSION = "2.5.0";
 let userscriptDetected = false;
 let detectedUserscriptVersion: string | null = null;
 
@@ -120,17 +136,30 @@ interface ChangesPreview {
   unavailableButRequested: string[]; // 가용 목록엔 있으나 데이터 없는 회차
   rounds: RoundPreview[]; // 회차별 요약
   // 멤버 변동(auto-sync)은 현재 멤버 기준 1회 — 회차별 아님
-  leavingNicknames: string[]; // 시트에만 있는 닉네임 = 탈퇴
-  joiningNicknames: string[]; // payload에만 있는 닉네임 = 신규
+  leaving: PreviewMember[]; // 시트에만 있는 닉네임 = 탈퇴 (sheetRow 보유)
+  joining: PreviewMember[]; // payload에만 있는 닉네임 = 신규 (sheetRow 미보유)
   nicknameChanges: NicknameChange[]; // staying 멤버 중 닉네임이 바뀐 항목
   resultGapRounds: string[]; // 레이드 결과 탭에만 빠진 회차 (회차 행만 추가)
   layout: "pre-migration" | "post-migration";
   needsReverseMigration: boolean; // layout === post-migration (구버그 Col B member_id) → 역마이그레이션 필요
 }
 let lastChangesPreview: ChangesPreview | null = null;
+// 수집 진행 미러링 — 유저스크립트 nra-progress 수신 시 갱신, payload 수신 시 정리.
+// null = 미표시 (구버전 유저스크립트는 메시지를 안 보내므로 graceful 하게 숨김 유지).
+let collectProgress: {
+  captured: number;
+  total: number;
+  statusText: string;
+} | null = null;
 let lastNormalized: NormalizedMultiPayload | null = null; // previewChanges → applyAllChanges 전달
 let lastTargets: RoundTarget[] = []; // 탭별 누락 플래그 포함 처리 대상
 let nonParticipatingNicknames: string[] | null = null;
+
+// 첫 실행 멤버 자동 채움 (E-NRA-006) — block 모드(빈 시트) 진입 시 캡처 닉네임을 캡처 순서로
+// 자동 기록하고 회차 동기화까지 한 번에 진행한다. 가입 순서는 사용자가 시트에서 직접 정렬.
+// autofillAttempted 는 payload당 1회 가드(재진입 루프 방지).
+let autofillAttempted = false;
+let autofillStatus: string | null = null; // 자동 채움 안내 배너
 
 // 신뢰 다이얼로그 (Hybrid fingerprint — BUILT_IN 미일치 시 사용자 옵트인)
 interface TrustDialogState {
@@ -180,14 +209,6 @@ function formatRemaining(ms: number): string {
   const m = Math.floor(totalSec / 60);
   const s = totalSec % 60;
   return `${m}분 ${String(s).padStart(2, "0")}초`;
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 function clearCountdown(): void {
@@ -803,8 +824,13 @@ async function previewChanges(): Promise<void> {
         missingStats: t.missingStats,
         missingMember: t.missingMember,
       })),
-      leavingNicknames: classResult.unmatchedSheetNicknames.map((u) => u.nickname),
-      joiningNicknames: classResult.unmatchedPayloadMembers.map((m) => m.nickname),
+      leaving: classResult.unmatchedSheetNicknames.map((u) => ({
+        nickname: u.nickname,
+        sheetRow: u.sheetRow,
+      })),
+      joining: classResult.unmatchedPayloadMembers.map((m) => ({
+        nickname: m.nickname,
+      })),
       nicknameChanges: classResult.nicknameChanges,
       resultGapRounds,
       layout,
@@ -814,6 +840,47 @@ async function previewChanges(): Promise<void> {
     renderApp();
   } catch (e) {
     if (e instanceof SyncError) {
+      // 첫 실행(빈 시트, block) → MIGRATION_BLOCKED 에러 대신 캡처 닉네임을 캡처 순서로
+      // 자동 기록한 뒤 회차 동기화 프리뷰까지 한 번에 진행 (E-NRA-006, 재fetch 불필요).
+      // 가입 순서 정렬은 사용자가 시트에서 직접 (32명 드래그 UX 회피, 사용자 결정 2026-06-03).
+      // block 정의상 기존 데이터 없음 보장 → backfill/none 은 여기 도달 안 함 (BR-1/2).
+      if (e.code === MIGRATION_BLOCKED && !autofillAttempted) {
+        autofillAttempted = true; // payload당 1회 (재진입 루프 방지)
+        const nicknames = extractNicknames(getLastPayload());
+        const token = getAccessToken();
+        const sheetId = getSheetId();
+        if (nicknames.length > 0 && token !== null && sheetId !== null) {
+          console.info(
+            `[autofill] mode=block, captured=${nicknames.length}/${AUTOFILL_CAPACITY} — 자동 채움 시도`
+          );
+          try {
+            const result = await writeAutofill(nicknames, sheetId, token);
+            if (result.ok) {
+              autofillStatus =
+                `✅ 유니온 멤버 ${result.written}명을 캡처 순서로 자동 입력했습니다.` +
+                (result.written < AUTOFILL_CAPACITY
+                  ? ` (정원 ${AUTOFILL_CAPACITY} 중 ${result.written}명)`
+                  : "");
+              lastError = null;
+              await previewChanges(); // 재진입 — 시트에 닉네임 생김 → 정상 회차 프리뷰
+              return;
+            }
+            // not_empty — 판정~쓰기 사이 데이터 생김 (BR-1 가드)
+            lastError =
+              "시트에 이미 데이터가 있어 자동 채움을 중단했습니다. 새로고침 후 다시 시도해주세요.";
+            renderApp();
+            return;
+          } catch (writeErr) {
+            lastError =
+              writeErr instanceof Error ? writeErr.message : String(writeErr);
+            console.error("[autofill] write error", writeErr);
+            renderApp();
+            return;
+          }
+        }
+        // 닉네임 0 또는 로그인/시트 미비 → 기존 안내로 폴백
+        console.info("[autofill] block 진입했으나 자동 채움 불가 — 기존 안내 유지");
+      }
       lastError = `${e.code}: ${e.message}`;
     } else {
       lastError = e instanceof Error ? e.message : String(e);
@@ -1240,6 +1307,7 @@ function renderApp(): void {
             <a href="https://greasyfork.org/scripts/579278" target="_blank" rel="noopener noreferrer">전용 유저스크립트</a>를 먼저 설치해주세요.
           </p>
           <button type="button" id="fetch-raid-btn" ${trustGate ? "disabled" : ""}>🎯 신규 회차 데이터 가져오기</button>
+          ${collectProgress !== null ? `<div class="collect-progress status--ok">⏳ 수집 진행: 캡처 ${collectProgress.captured}/${collectProgress.total}${collectProgress.statusText ? ` · ${escapeHtml(collectProgress.statusText)}` : ""}</div>` : ""}
         `
       : "";
 
@@ -1278,9 +1346,9 @@ function renderApp(): void {
             ${preview.resultGapRounds.length > 0 ? `<li><strong>레이드 결과 행 추가</strong>: ${preview.resultGapRounds.map((n) => escapeHtml(n) + "차").join(", ")}</li>` : ""}
             ${preview.unavailableButRequested.length > 0 ? `<li class="status--warn"><strong>데이터 없는 회차</strong>: ${preview.unavailableButRequested.map((n) => escapeHtml(n) + "차").join(", ")}</li>` : ""}
             <li><strong>레이드 통계 신규 행</strong>: 총 ${totalNewRows}행</li>
-            <li><strong>탈퇴 멤버</strong> (${preview.leavingNicknames.length}명)${preview.leavingNicknames.length > 0 ? `: ${preview.leavingNicknames.map((n) => escapeHtml(n)).join(", ")}` : ""}</li>
-            <li><strong>신규 가입 멤버</strong> (${preview.joiningNicknames.length}명)${preview.joiningNicknames.length > 0 ? `: ${preview.joiningNicknames.map((n) => escapeHtml(n)).join(", ")}` : ""}</li>
-            <li><strong>닉네임 변경 멤버</strong> (${preview.nicknameChanges.length}명)${preview.nicknameChanges.length > 0 ? `: ${preview.nicknameChanges.map((c) => `${escapeHtml(c.old)} → ${escapeHtml(c.new)}`).join(", ")}` : ""}</li>
+            <li><strong>탈퇴 멤버</strong> (${preview.leaving.length}명)${preview.leaving.length > 0 ? `<div class="diff-list">${preview.leaving.map((m) => renderDiffMember(m, "del")).join("")}</div>` : ""}</li>
+            <li><strong>신규 가입 멤버</strong> (${preview.joining.length}명)${preview.joining.length > 0 ? `<div class="diff-list">${preview.joining.map((m) => renderDiffMember(m, "add")).join("")}</div>` : ""}</li>
+            <li><strong>닉네임 변경 멤버</strong> (${preview.nicknameChanges.length}명)${preview.nicknameChanges.length > 0 ? `<div class="diff-list">${preview.nicknameChanges.map((c) => renderNicknameChange(c)).join("")}</div>` : ""}</li>
             ${
               preview.needsReverseMigration
                 ? `<li><strong>자동 복구</strong>: <code>유니온 멤버</code> 탭에 잘못 삽입된 <code>member_id</code> 숨김 컬럼을 제거하고 member_id 를 별도 <code>_nra_member_mapping</code> 탭으로 옮깁니다 (시트 수식·Apps Script 호환성 복구)</li>`
@@ -1388,6 +1456,12 @@ function renderApp(): void {
       ? `<section class="error" role="alert"><p>⚠️ ${escapeHtml(lastError)}</p></section>`
       : "";
 
+  // 첫 실행 멤버 자동 채움 (E-NRA-006) — 자동 입력 안내 배너.
+  const autofillStatusBlock =
+    autofillStatus !== null
+      ? `<section class="autofill-status"><p class="status status--ok">${escapeHtml(autofillStatus)}</p><p class="autofill-reorder-notice">⚠️ 가입 순서가 중요하면 시트에서 직접 정렬해주세요.</p></section>`
+      : "";
+
   const versionWarningBlock =
     userscriptDetected && isUserscriptOutdated(detectedUserscriptVersion, EXPECTED_USERSCRIPT_VERSION)
       ? `<div class="us-version-floater" role="alert">
@@ -1410,6 +1484,7 @@ function renderApp(): void {
       ${trustBlock !== "" ? `<section class="trust">${trustBlock}</section>` : ""}
       ${fetchTriggerBlock !== "" ? `<section class="fetch-trigger">${fetchTriggerBlock}</section>` : ""}
       ${payloadBlock !== "" ? `<section class="payload">${payloadBlock}</section>` : ""}
+      ${autofillStatusBlock}
       ${previewBlock !== "" ? `<section class="preview">${previewBlock}</section>` : ""}
       ${errorBlock}
       <section class="hint">
@@ -1532,6 +1607,9 @@ function bootstrap(): void {
     lastBatchPlan = null;
     lastAutoSync = null;
     writeStatus = "idle";
+    collectProgress = null; // 수집 완료 — 진행 영역 정리
+    autofillAttempted = false; // 새 payload → 자동 채움 재시도 허용
+    autofillStatus = null;
     renderApp();
     void previewChanges();
   });
@@ -1604,6 +1682,16 @@ function bootstrap(): void {
     writeStatus = "done";
     writeResult = { backupTabName: detail.backupTabName };
     console.info("[NRA-SPA] sheetsWriteComplete", detail);
+    renderApp();
+  });
+
+  window.addEventListener("nraProgressUpdated", (e) => {
+    const d = (e as CustomEvent).detail as NraProgressMessage;
+    collectProgress = {
+      captured: d.captured,
+      total: d.total,
+      statusText: d.statusText,
+    };
     renderApp();
   });
 

@@ -70,6 +70,16 @@ export type NikkeRaidPayload =
       error: { code: number; msg: string };
     };
 
+// 수집 진행 미러링 메시지 (유저스크립트 → SPA).
+// NikkeRaidPayload union과 분리 — 진행은 캡처 중 다회 발생, 데이터 payload는 완료 시 1회.
+export interface NraProgressMessage {
+  type: "nra-progress";
+  captured: number; // 현재 캡처 수 (0~2)
+  total: 2; // 핵심 캡처 분모 (raid + members)
+  statusText: string; // 회차 등 부가 상태
+  scriptVersion: string;
+}
+
 // ─────────────────────────────────────────────────────────
 // F-NRA-002-02 OAuth (GIS + drive.file)
 // SOT: ARCHITECTURE.md §5 / CONSTRAINTS.md §3

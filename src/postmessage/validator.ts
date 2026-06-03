@@ -1,7 +1,7 @@
 // F-NRA-002-04 origin + payload validator — Wave A 의존 (실 유저스크립트는 blablalink.com 서브도메인에서 송신).
 // SOT: ai_docs/nikke-raid-autosync/API_SPEC.md §2 / CONSTRAINTS.md §2.
 
-import type { NikkeRaidPayload } from "../types";
+import type { NikkeRaidPayload, NraProgressMessage } from "../types";
 
 // blablalink.com의 직접 서브도메인만 허용 (예: tools.blablalink.com, www.blablalink.com). 다단계 서브도메인 차단.
 export const ALLOWED_ORIGIN_PATTERN = /^https:\/\/[^.]+\.blablalink\.com$/;
@@ -57,4 +57,17 @@ export function validateNikkeRaidPayload(data: unknown): data is NikkeRaidPayloa
     default:
       return false;
   }
+}
+
+// 수집 진행 메시지 검증 — 정상 payload 검증과 분리된 경로 (handler에서 payload 검증 전에 가로챔).
+export function isProgressMessage(data: unknown): data is NraProgressMessage {
+  if (typeof data !== "object" || data === null) return false;
+  const obj = data as Record<string, unknown>;
+  return (
+    obj.type === "nra-progress" &&
+    typeof obj.captured === "number" &&
+    obj.total === 2 &&
+    typeof obj.statusText === "string" &&
+    typeof obj.scriptVersion === "string"
+  );
 }

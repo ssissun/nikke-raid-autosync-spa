@@ -251,6 +251,42 @@ section p {
   color: var(--error);
 }
 
+.diff-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.diff-member {
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-add {
+  color: var(--success);
+}
+
+.diff-del {
+  color: var(--error);
+}
+
+.diff-mod {
+  color: var(--warning);
+}
+
+/* 첫 실행 자동 채움 — 가입 순서 정렬 안내 (E-NRA-006, 눈에 띄게 강조) */
+.autofill-reorder-notice {
+  color: var(--error);
+  font-size: 17px;
+  font-weight: 700;
+  margin-top: 6px;
+}
+
+.collect-progress {
+  margin-top: 8px;
+  font-size: 14px;
+}
+
 .meta {
   color: var(--steel);
   font-size: 14px;

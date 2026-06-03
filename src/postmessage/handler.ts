@@ -1,7 +1,11 @@
 // F-NRA-002-04 postMessage handler — origin → schema → type 분기 → CustomEvent 발행.
 
 import type { NikkeRaidPayload } from "../types";
-import { isAllowedOrigin, validateNikkeRaidPayload } from "./validator";
+import {
+  isAllowedOrigin,
+  isProgressMessage,
+  validateNikkeRaidPayload,
+} from "./validator";
 
 export function handleMessage(event: MessageEvent): void {
   if (!isAllowedOrigin(event.origin)) {
@@ -17,6 +21,12 @@ export function handleMessage(event: MessageEvent): void {
       console.warn("[NRA-SPA] postMessage: JSON.parse 실패");
       return;
     }
+  }
+
+  // 수집 진행 메시지는 payload 검증 경로 진입 전에 가로채 별도 이벤트로 발행한다 (정상 payload 흐름 무영향).
+  if (isProgressMessage(data)) {
+    window.dispatchEvent(new CustomEvent("nraProgressUpdated", { detail: data }));
+    return;
   }
 
   if (!validateNikkeRaidPayload(data)) {
