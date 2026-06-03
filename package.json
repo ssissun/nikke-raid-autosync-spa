@@ -1,6 +1,6 @@
 {
   "name": "nikke-raid-autosync-spa",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "NIKKE Union Raid auto-sync SPA — postMessage receiver + Google Sheets batchUpdate (E-NRA-002, third-party tool for ssissun's union)",

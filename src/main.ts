@@ -65,7 +65,10 @@ import type {
 } from "./types";
 import type { NicknameChange } from "./matching/types";
 
-const APP_VERSION = "0.1.0";
+// 버전은 package.json 의 version 을 vite define(__APP_VERSION__)으로 주입받는다.
+// 버전업: package.json "version"(X.Y.Z) 한 곳만 수정 → 빌드 시 자동 반영.
+declare const __APP_VERSION__: string;
+const APP_VERSION = __APP_VERSION__;
 
 // DevTools 검증 helper — F-NRA-002-02 AC-T02-3 (`isAuthenticated()` 콘솔 호출)
 declare global {
