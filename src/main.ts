@@ -99,7 +99,7 @@ declare global {
 let lastError: string | null = null;
 
 // 유저스크립트 버전 감지 — 수신 payload 의 scriptVersion 과 권장 버전 비교. 다르면(또는 미보고 구버전) 업그레이드 배너.
-const EXPECTED_USERSCRIPT_VERSION = "2.5.0";
+const EXPECTED_USERSCRIPT_VERSION = "2.5.1";
 let userscriptDetected = false;
 let detectedUserscriptVersion: string | null = null;
 
@@ -141,6 +141,7 @@ interface ChangesPreview {
   // 멤버 변동(auto-sync)은 현재 멤버 기준 1회 — 회차별 아님
   leaving: PreviewMember[]; // 시트에만 있는 닉네임 = 탈퇴 (sheetRow 보유)
   joining: PreviewMember[]; // payload에만 있는 닉네임 = 신규 (sheetRow 미보유)
+  reconciled: { nickname: string; sheetRow: number }[]; // 수동 추가 행 인식 → member_id 자동 연결
   nicknameChanges: NicknameChange[]; // staying 멤버 중 닉네임이 바뀐 항목
   resultGapRounds: string[]; // 레이드 결과 탭에만 빠진 회차 (회차 행만 추가)
   layout: "pre-migration" | "post-migration";
@@ -834,6 +835,10 @@ async function previewChanges(): Promise<void> {
       joining: classResult.unmatchedPayloadMembers.map((m) => ({
         nickname: m.nickname,
       })),
+      reconciled: classResult.reconciled.map((r) => ({
+        nickname: r.nickname,
+        sheetRow: r.sheetRow,
+      })),
       nicknameChanges: classResult.nicknameChanges,
       resultGapRounds,
       layout,
@@ -1351,6 +1356,7 @@ function renderApp(): void {
             <li><strong>레이드 통계 신규 행</strong>: 총 ${totalNewRows}행</li>
             <li><strong>탈퇴 멤버</strong> (${preview.leaving.length}명)${preview.leaving.length > 0 ? `<div class="diff-list">${preview.leaving.map((m) => renderDiffMember(m, "del")).join("")}</div>` : ""}</li>
             <li><strong>신규 가입 멤버</strong> (${preview.joining.length}명)${preview.joining.length > 0 ? `<div class="diff-list">${preview.joining.map((m) => renderDiffMember(m, "add")).join("")}</div>` : ""}</li>
+            ${preview.reconciled.length > 0 ? `<li class="status--ok"><strong>기존 수동 추가 행 인식</strong> (${preview.reconciled.length}명) — 새 행을 만들지 않고 member_id 를 자동 연결합니다(중복 방지): <div class="diff-list">${preview.reconciled.map((r) => `<span class="diff-member">${escapeHtml(r.nickname)} <small>(행 ${r.sheetRow})</small></span>`).join("")}</div></li>` : ""}
             <li><strong>닉네임 변경 멤버</strong> (${preview.nicknameChanges.length}명)${preview.nicknameChanges.length > 0 ? `<div class="diff-list">${preview.nicknameChanges.map((c) => renderNicknameChange(c)).join("")}</div>` : ""}</li>
             ${
               preview.needsReverseMigration

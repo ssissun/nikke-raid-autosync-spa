@@ -27,6 +27,13 @@ export interface UnmatchedSheetNickname {
   sheetRow: number;
 }
 
+// 수동 추가 행(member_id 미매핑)을 닉네임으로 payload 신규 멤버와 결합한 결과.
+export interface ReconciledMember {
+  member_id: string;
+  nickname: string;
+  sheetRow: number;
+}
+
 export interface ClassificationResult {
   classification: SyncClassification;
   mode: MigrationMode;
@@ -37,6 +44,8 @@ export interface ClassificationResult {
   unmatchedSheetNicknames: UnmatchedSheetNickname[];
   /** backfill 모드에서 payload 닉네임 매칭 실패 목록 (신규 가입 후보) */
   unmatchedPayloadMembers: GuildMember[];
+  /** none 모드에서 수동 추가 행을 닉네임으로 자동 결합(입양)한 목록 — 신규 오인식 방지 */
+  reconciled: ReconciledMember[];
 }
 
 let lastResult: ClassificationResult | null = null;
@@ -93,6 +102,55 @@ function backfillColBMapFromNicknames(
   return { alerts, unmatchedSheetNicknames, unmatchedPayloadMembers };
 }
 
+/**
+ * none 모드 — 매핑 없는 시트 행(운영자가 수동 추가한 멤버)을 닉네임으로 payload 신규 멤버와 결합.
+ * 확신 케이스(미매핑 행 1개 ↔ 신규 멤버 1명, 닉네임 1:1)만 colBMap 에 반영(입양) → 이후 staying 으로 흡수되어
+ * 중복 신규 행 생성을 방지하고 member_id 를 그 행에 backfill 한다.
+ * 닉네임 중복·모호(행 다수 또는 멤버 다수)는 결합하지 않고 ambiguous 로 보고(수동 확인 유도).
+ * @returns reconciled(입양 성사), ambiguous(자동 결합 불가 닉네임)
+ */
+export function reconcileUnmappedByNickname(
+  colBMap: Map<string, number>,
+  colCNicknames: ReadonlyMap<number, string>,
+  payloadMembers: readonly GuildMember[]
+): { reconciled: ReconciledMember[]; ambiguous: string[] } {
+  const claimedRows = new Set(colBMap.values());
+  const mappedIds = new Set(colBMap.keys());
+
+  // 미매핑 시트 행: nickname → [sheetRow...]
+  const unmappedByNick = new Map<string, number[]>();
+  for (const [sheetRow, nick] of colCNicknames.entries()) {
+    if (claimedRows.has(sheetRow) || nick.length === 0) continue;
+    const arr = unmappedByNick.get(nick) ?? [];
+    arr.push(sheetRow);
+    unmappedByNick.set(nick, arr);
+  }
+  if (unmappedByNick.size === 0) return { reconciled: [], ambiguous: [] };
+
+  // payload 신규 멤버(member_id 미매핑): nickname → [member...]
+  const joiningByNick = new Map<string, GuildMember[]>();
+  for (const m of payloadMembers) {
+    if (mappedIds.has(m.member_id)) continue;
+    const arr = joiningByNick.get(m.nickname) ?? [];
+    arr.push(m);
+    joiningByNick.set(m.nickname, arr);
+  }
+
+  const reconciled: ReconciledMember[] = [];
+  const ambiguous: string[] = [];
+  for (const [nick, rows] of unmappedByNick.entries()) {
+    const members = joiningByNick.get(nick) ?? [];
+    if (members.length === 0) continue; // payload 신규에 없음 → 진짜 탈퇴/불일치(leaving 로직이 처리)
+    if (rows.length === 1 && members.length === 1) {
+      colBMap.set(members[0].member_id, rows[0]); // 입양 → buildSyncClassification 에서 staying
+      reconciled.push({ member_id: members[0].member_id, nickname: nick, sheetRow: rows[0] });
+    } else {
+      ambiguous.push(nick); // 닉네임 중복(행 다수 또는 멤버 다수) → 자동 결합 불가
+    }
+  }
+  return { reconciled, ambiguous };
+}
+
 export async function startClassificationFlow(
   accessToken: string,
   sheetId: string,
@@ -134,6 +192,23 @@ export async function startClassificationFlow(
     alerts.push(...backfillResult.alerts);
     unmatchedSheetNicknames = backfillResult.unmatchedSheetNicknames;
     unmatchedPayloadMembers = backfillResult.unmatchedPayloadMembers;
+  }
+
+  // none 모드: 수동 추가 행(미매핑)을 닉네임으로 payload 신규 멤버와 결합(입양) → 중복 신규 오인식 방지.
+  // colBMap 을 mutate 하므로 buildSyncClassification 전에 수행 → 입양된 멤버는 staying 으로 흡수된다.
+  let reconciled: ReconciledMember[] = [];
+  if (mode === "none") {
+    const rec = reconcileUnmappedByNickname(
+      sheetRead.colBMap,
+      sheetRead.colCNicknames,
+      payloadMembers
+    );
+    reconciled = rec.reconciled;
+    if (rec.ambiguous.length > 0) {
+      alerts.push(
+        `자동 매핑 불가(닉네임 중복/모호) ${rec.ambiguous.length}건: ${rec.ambiguous.join(", ")} — 수동 확인 필요`
+      );
+    }
   }
 
   const classification = buildSyncClassification(
@@ -180,6 +255,7 @@ export async function startClassificationFlow(
     isComplete,
     unmatchedSheetNicknames,
     unmatchedPayloadMembers,
+    reconciled,
   };
   lastResult = result;
   return result;

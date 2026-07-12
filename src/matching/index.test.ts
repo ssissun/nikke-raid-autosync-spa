@@ -82,3 +82,50 @@ describe("startClassificationFlow — mode none 탈퇴/신규 surface", () => {
     expect(r.unmatchedPayloadMembers.map((m) => m.nickname)).toEqual(["NEW"]);
   });
 });
+
+describe("startClassificationFlow — 수동 추가 행 닉네임 reconciliation (신규 오인식 방지)", () => {
+  it("수동 추가 행(미매핑) ↔ payload 신규 1:1 → 입양(staying), 신규 아님", async () => {
+    // A 는 매핑됨. '신규멤버' 는 운영자가 유니온 멤버 탭에 수동 추가(매핑 탭엔 없음).
+    stubFetch({
+      unionRows: [HEADER, ["1", "A", ""], ["2", "신규멤버", ""]],
+      tabRows: [["닉네임", "member_id"], ["A", "ida"]],
+    });
+    const payload = [gm("ida", "A"), gm("idnew", "신규멤버")];
+    const r = await startClassificationFlow("tok", "sheet", payload);
+
+    expect(r.mode).toBe("none");
+    expect(r.reconciled.map((x) => x.nickname)).toEqual(["신규멤버"]);
+    expect(r.reconciled[0].sheetRow).toBe(3);
+    // 중복 신규로 추가되지 않아야 함
+    expect(r.unmatchedPayloadMembers).toHaveLength(0);
+    expect(r.unmatchedSheetNicknames).toHaveLength(0);
+    // 입양되어 staying 2명
+    expect(r.classification.staying.map((s) => s.member_id).sort()).toEqual(["ida", "idnew"]);
+    expect(r.isComplete).toBe(true);
+  });
+
+  it("닉네임 중복(모호) → 자동 결합 안 함, 신규 유지 + alert", async () => {
+    stubFetch({
+      unionRows: [HEADER, ["1", "A", ""], ["2", "쌍둥이", ""], ["3", "쌍둥이", ""]],
+      tabRows: [["닉네임", "member_id"], ["A", "ida"]],
+    });
+    const payload = [gm("ida", "A"), gm("idx", "쌍둥이")];
+    const r = await startClassificationFlow("tok", "sheet", payload);
+
+    expect(r.reconciled).toHaveLength(0);
+    expect(r.unmatchedPayloadMembers.map((m) => m.nickname)).toEqual(["쌍둥이"]);
+    expect(r.alerts.some((a) => a.includes("쌍둥이"))).toBe(true);
+  });
+
+  it("일치하는 수동 행 없는 진짜 신규 → 그대로 신규(joining)", async () => {
+    stubFetch({
+      unionRows: [HEADER, ["1", "A", ""]],
+      tabRows: [["닉네임", "member_id"], ["A", "ida"]],
+    });
+    const payload = [gm("ida", "A"), gm("idnew", "진짜신규")];
+    const r = await startClassificationFlow("tok", "sheet", payload);
+
+    expect(r.reconciled).toHaveLength(0);
+    expect(r.unmatchedPayloadMembers.map((m) => m.nickname)).toEqual(["진짜신규"]);
+  });
+});
