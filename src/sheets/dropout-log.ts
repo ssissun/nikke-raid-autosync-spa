@@ -1,10 +1,12 @@
-// 탈퇴자 레벨 기록 — 탈퇴 멤버(현재 유니온에 없는 멤버)의 회차별 레벨 보존.
+// 탈퇴 멤버 레벨 기록 — 탈퇴 멤버(현재 유니온에 없는 멤버)의 회차별 레벨 보존.
 // 탭 구조: A열 닉네임 | B열~ 회차 컬럼(29차, 30차, …). 닉네임 기준.
-// '탈퇴자 레벨 기록' 탭이 없는 시트는 모든 함수가 no-op(null 반환) — 하위호환.
+// 탭명은 '탈퇴 멤버'(신) 또는 '탈퇴자 레벨 기록'(구) 둘 다 인식. 없는 시트는 no-op(null 반환) — 하위호환.
 
 import { ensureSheetGrid } from "./grid";
 
-const DROPOUT_SHEET = "탈퇴자 레벨 기록";
+// 시트 제작자가 탭명을 '탈퇴자 레벨 기록'(구) → '탈퇴 멤버'(신)로 변경. 둘 다 인식.
+// 신규 이름 우선. 실제 매칭된 탭 title 을 이후 모든 A1 range 에 재사용한다.
+const DROPOUT_SHEET_NAMES: readonly string[] = ["탈퇴 멤버", "탈퇴자 레벨 기록"];
 const ROUND_RE = /^(\d+)차$/;
 
 // 0-based 컬럼 인덱스 → A1 표기 letter (A, B, …, Z, AA).
@@ -20,6 +22,7 @@ function colLetter(idx0: number): string {
 }
 
 export interface DropoutTab {
+  title: string; // 실제 매칭된 탭 이름 ('탈퇴 멤버' 또는 '탈퇴자 레벨 기록')
   gridId: number; // sheetId
   roundCols: Map<string, number>; // 회차("40") → 0-based 컬럼 인덱스
   byNick: Map<string, { rowIndex: number; cells: string[] }>; // 닉네임 → {1-based sheetRow, 행 셀}
@@ -61,10 +64,10 @@ export async function readDropoutTab(
   fetchImpl: typeof fetch = fetch
 ): Promise<DropoutTab | null> {
   const sheets = await listSheets(spreadsheetId, token, fetchImpl);
-  const meta = sheets.find((s) => s.title === DROPOUT_SHEET);
+  const meta = sheets.find((s) => DROPOUT_SHEET_NAMES.includes(s.title));
   if (meta === undefined) return null;
 
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(`${DROPOUT_SHEET}!A1:ZZ1000`)}`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(`${meta.title}!A1:ZZ1000`)}`;
   const res = await fetchImpl(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) throw new Error(`DROPOUT_READ_FAILED: HTTP ${res.status}`);
   const body = (await res.json()) as { values?: string[][] };
@@ -86,6 +89,7 @@ export async function readDropoutTab(
   }
 
   return {
+    title: meta.title,
     gridId: meta.sheetId,
     roundCols,
     byNick,
@@ -127,7 +131,7 @@ async function insertOrderedRoundColumn(
   });
   if (!ins.ok) throw new Error(`DROPOUT_COL_INSERT_FAILED: HTTP ${ins.status}`);
 
-  const headerCell = `${DROPOUT_SHEET}!${colLetter(insertAt)}1`;
+  const headerCell = `${tab.title}!${colLetter(insertAt)}1`;
   const put = await fetchImpl(
     `${base}/values/${encodeURIComponent(headerCell)}?valueInputOption=RAW`,
     {
@@ -187,7 +191,7 @@ export async function recordDropouts(
         const cur = String(existing.cells[col] ?? "").trim();
         if (mode === "fillEmpty" && cur.length > 0) continue; // 이미 값 있으면 보존
         valueUpdates.push({
-          range: `${DROPOUT_SHEET}!${colLetter(col)}${existing.rowIndex}`,
+          range: `${tab.title}!${colLetter(col)}${existing.rowIndex}`,
           values: [[String(lv)]],
         });
       }
@@ -205,7 +209,7 @@ export async function recordDropouts(
       }
       if (!any && nick.length === 0) continue;
       valueUpdates.push({
-        range: `${DROPOUT_SHEET}!A${appendRow}:${colLetter(tab.colCount - 1)}${appendRow}`,
+        range: `${tab.title}!A${appendRow}:${colLetter(tab.colCount - 1)}${appendRow}`,
         values: [rowCells],
       });
       tab.byNick.set(nick, { rowIndex: appendRow, cells: rowCells });
@@ -217,7 +221,7 @@ export async function recordDropouts(
   if (valueUpdates.length > 0) {
     // grid 사전 확장 — 새 행/열이 기존 grid 한계를 넘으면 400(exceeds grid limits) 발생.
     // (탈퇴자 탭이 작은 grid(예: 2행)로 만들어진 경우 다수 탈퇴자 append 시 필수)
-    await ensureSheetGrid(spreadsheetId, DROPOUT_SHEET, appendRow - 1, tab.colCount, token, fetchImpl);
+    await ensureSheetGrid(spreadsheetId, tab.title, appendRow - 1, tab.colCount, token, fetchImpl);
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values:batchUpdate`;
     const res = await fetchImpl(url, {
       method: "POST",

@@ -9,8 +9,10 @@ function makeFetch(opts: {
   grid?: string[][];
   gridRows?: number;
   gridCols?: number;
+  title?: string; // 탭 이름 (미지정 시 구 이름). 하위호환 검증용.
 }) {
   const present = opts.present ?? true;
+  const title = opts.title ?? DROPOUT;
   const grid = (opts.grid ?? []).map((r) => [...r]);
   const gridRows = opts.gridRows ?? 1000;
   const gridCols = opts.gridCols ?? 100;
@@ -31,7 +33,7 @@ function makeFetch(opts: {
             {
               properties: {
                 sheetId: 9,
-                title: DROPOUT,
+                title,
                 gridProperties: { rowCount: gridRows, columnCount: gridCols },
               },
             },
@@ -44,11 +46,11 @@ function makeFetch(opts: {
       const sheets: Array<{ properties: { sheetId: number; title: string } }> = [
         { properties: { sheetId: 1, title: "유니온 멤버" } },
       ];
-      if (present) sheets.push({ properties: { sheetId: 9, title: DROPOUT } });
+      if (present) sheets.push({ properties: { sheetId: 9, title } });
       return new Response(JSON.stringify({ sheets }), { status: 200 });
     }
     // 탭 values 읽기
-    if (u.includes(`${DROPOUT}!A1:ZZ1000`) && method === "GET") {
+    if (u.includes(`${title}!A1:ZZ1000`) && method === "GET") {
       return new Response(JSON.stringify({ values: grid }), { status: 200 });
     }
     // insertDimension (컬럼 삽입) — grid 에 빈 컬럼 splice. (/values:batchUpdate 와 구분)
@@ -107,8 +109,21 @@ describe("readDropoutTab", () => {
     });
     const tab = await readDropoutTab("s", "t", fetchImpl);
     expect(tab).not.toBeNull();
+    expect(tab!.title).toBe(DROPOUT);
     expect(tab!.roundCols.get("35")).toBe(1);
     expect(tab!.roundCols.get("40")).toBe(3);
+    expect(tab!.byNick.get("옛멤버")?.rowIndex).toBe(2);
+  });
+
+  it("새 이름 '탈퇴 멤버' 탭도 인식 + title 반환 (하위호환)", async () => {
+    const { fetchImpl } = makeFetch({
+      present: true,
+      grid: [HEADER, ["옛멤버", "500", "", "520"]],
+      title: "탈퇴 멤버",
+    });
+    const tab = await readDropoutTab("s", "t", fetchImpl);
+    expect(tab).not.toBeNull();
+    expect(tab!.title).toBe("탈퇴 멤버");
     expect(tab!.byNick.get("옛멤버")?.rowIndex).toBe(2);
   });
 });
@@ -128,6 +143,20 @@ describe("recordDropouts", () => {
     await recordDropouts("s", "t", entries, "fillEmpty", fetchImpl);
     expect(batchData).toHaveLength(1);
     expect(batchData[0].range).toBe(`${DROPOUT}!A2:D2`);
+    expect(batchData[0].values).toEqual([["옛멤버", "500", "", "520"]]);
+  });
+
+  it("새 이름 '탈퇴 멤버' 탭에도 range 를 그 이름으로 기록 (하위호환)", async () => {
+    const { fetchImpl, batchData } = makeFetch({
+      present: true,
+      grid: [HEADER],
+      title: "탈퇴 멤버",
+    });
+    const entries = new Map([["옛멤버", new Map([["35", 500], ["40", 520]])]]);
+    const r = await recordDropouts("s", "t", entries, "fillEmpty", fetchImpl);
+    expect(r).not.toBeNull();
+    expect(batchData).toHaveLength(1);
+    expect(batchData[0].range).toBe("탈퇴 멤버!A2:D2");
     expect(batchData[0].values).toEqual([["옛멤버", "500", "", "520"]]);
   });
 
