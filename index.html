@@ -41,8 +41,25 @@
       data-exclude-search="true"
       data-exclude-hash="true"
     ></script>
+    <!--
+      Microsoft Clarity(히트맵·세션 녹화). 화면에 유니온 멤버 닉네임·시트 데이터가 보이므로
+      body 전체에 data-clarity-mask를 걸어 모든 텍스트를 가린다(프로젝트 설정보다 우선).
+      동의 거부 신호를 보내 쿠키 없이 동작한다.
+    -->
+    <script>
+      (function () {
+        var clarityId = "yy03kw15nd";
+        if (!clarityId || location.hostname !== "ssissun.github.io") return;
+        (function (c, l, a, r, i, t, y) {
+          c[a] = c[a] || function () { (c[a].q = c[a].q || []).push(arguments); };
+          t = l.createElement(r); t.async = 1; t.src = "https://www.clarity.ms/tag/" + i;
+          y = l.getElementsByTagName(r)[0]; y.parentNode.insertBefore(t, y);
+        })(window, document, "clarity", "script", clarityId);
+        window.clarity("consentv2", { ad_Storage: "denied", analytics_Storage: "denied" });
+      })();
+    </script>
   </head>
-  <body>
+  <body data-clarity-mask="True">
     <noscript>이 도구는 JavaScript가 필요합니다. 브라우저에서 JavaScript를 활성화해주세요.</noscript>
     <div id="app" aria-label="NIKKE 레이드 자동 동기화 도구">
       <p>로딩 중...</p>
