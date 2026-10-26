@@ -4,6 +4,7 @@ import "./style.css";
 import { getAccessToken, getEmail, getTokenExpiry, isAuthenticated, login, logout } from "./auth";
 import { GOOGLE_CLIENT_ID } from "./config";
 import { isUserscriptOutdated } from "./version";
+import { initPortalToast } from "./portal-toast";
 import { escapeHtml } from "./util/html";
 import {
   renderDiffMember,
@@ -1710,6 +1711,7 @@ function bootstrap(): void {
   }
 
   renderApp();
+  initPortalToast();
   console.info(`[NRA-SPA] v${APP_VERSION} initialized`);
 }
 

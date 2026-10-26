@@ -29,7 +29,7 @@
     <!--
       방문 분석(Umami). nikke-storyline과 같은 Website를 공유하고 data-tag로 구분한다.
       개인정보 비수집: 쿠키·식별자 없음, Do Not Track 존중, URL 쿼리·해시 제외,
-      커스텀 이벤트 없음(계정·시트 데이터를 다루는 도구라 페이지 조회만 센다).
+      계정·시트 데이터를 다루는 도구라 커스텀 이벤트는 Portal 안내 토스트 버튼 클릭(portal-toast)만 보낸다.
     -->
     <script
       defer
@@ -64,6 +64,16 @@
     <div id="app" aria-label="NIKKE 레이드 자동 동기화 도구">
       <p>로딩 중...</p>
     </div>
+    <aside class="portal-toast" role="status" aria-label="NIKKE Portal 안내" hidden data-portal-toast>
+      <p class="portal-toast-text">
+        이 도구는 <b>NIKKE Portal</b>에서도 열 수 있어요. 이 외에도 니케 관련 유용한 사이트들을 한 화면에서 모아볼 수 있어요.
+      </p>
+      <div class="portal-toast-actions">
+        <a class="portal-toast-action is-primary" href="https://ssissun.github.io/nikke-portal/#ur-autosync" target="_blank" rel="noopener" data-portal-toast-open>Portal 열기</a>
+        <button class="portal-toast-action" type="button" data-portal-toast-never>다시 보지 않기</button>
+        <button class="portal-toast-close" type="button" aria-label="닫기" data-portal-toast-close>×</button>
+      </div>
+    </aside>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

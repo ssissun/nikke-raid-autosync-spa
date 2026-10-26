@@ -219,6 +219,83 @@ main > section.trust {
   font-weight: 600;
 }
 
+/* NIKKE Portal 안내 토스트 — 우측 하단 고정 (업그레이드 플로터는 우측 상단) */
+.portal-toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 999;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-sm);
+  width: min(360px, calc(100vw - 32px));
+  padding: var(--gap-md) var(--gap-lg);
+  background: var(--canvas);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--rounded-lg);
+  box-shadow: var(--shadow-lg);
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--charcoal);
+  animation: portal-toast-in 0.3s ease;
+}
+.portal-toast[hidden] {
+  display: none;
+}
+.portal-toast-text {
+  margin: 0;
+  word-break: keep-all;
+}
+.portal-toast-text b {
+  color: var(--ink-deep);
+}
+.portal-toast-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.portal-toast .portal-toast-action {
+  padding: 5px 10px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--slate);
+  text-decoration: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--rounded-sm);
+}
+.portal-toast .portal-toast-action:hover {
+  color: var(--primary);
+}
+.portal-toast .portal-toast-action.is-primary {
+  font-weight: 600;
+  color: var(--primary);
+  background: var(--tint-lavender);
+  border-color: var(--primary);
+}
+.portal-toast .portal-toast-close {
+  margin-left: auto;
+  padding: 0 6px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--steel);
+  background: transparent;
+}
+.portal-toast .portal-toast-close:hover {
+  color: var(--ink);
+}
+@keyframes portal-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .portal-toast {
+    animation: none;
+  }
+}
+
 /* Headings inside sections */
 section h3 {
   margin: 0 0 var(--gap-md) 0;
