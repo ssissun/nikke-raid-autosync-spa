@@ -230,8 +230,9 @@ main > section.trust {
   gap: var(--gap-sm);
   width: min(360px, calc(100vw - 32px));
   padding: var(--gap-md) var(--gap-lg);
-  background: var(--canvas);
-  border: 1px solid var(--hairline-strong);
+  /* 흰 카드와 같은 색이면 묻히므로 보라 틴트로 구분한다 */
+  background: var(--tint-lavender);
+  border: 1px solid var(--primary);
   border-radius: var(--rounded-lg);
   box-shadow: var(--shadow-lg);
   font-size: 13.5px;
@@ -269,9 +270,13 @@ main > section.trust {
 }
 .portal-toast .portal-toast-action.is-primary {
   font-weight: 600;
-  color: var(--primary);
-  background: var(--tint-lavender);
+  color: var(--on-dark);
+  background: var(--primary);
   border-color: var(--primary);
+}
+.portal-toast .portal-toast-action.is-primary:hover {
+  color: var(--on-dark);
+  background: var(--primary-pressed);
 }
 .portal-toast .portal-toast-close {
   margin-left: auto;
